@@ -2,7 +2,7 @@
 
 Research-only cross-market scanner for FIFA / World Cup prediction-market price gaps between Polymarket and Kalshi.
 
-The current MVP discovers FIFA-related market candidates, uses manually approved cross-venue mappings, polls live YES/NO orderbooks, flags conservative complementary-buy arbitrage, and logs snapshots locally for backtesting. It does not place trades, manage private keys, auto-approve mappings, run WebSockets, or require cloud infrastructure.
+The current MVP discovers FIFA-related market candidates, expands Polymarket World Cup event pages into child markets, scans Kalshi `KXWCGAME` events, uses manually approved cross-venue mappings, polls live YES/NO orderbooks, flags conservative complementary-buy arbitrage, and logs snapshots locally for backtesting. It does not place trades, manage private keys, auto-approve mappings, run WebSockets, or require cloud infrastructure.
 
 ## Cross-Market FIFA Scanner
 
@@ -29,7 +29,7 @@ data/fifa_arbitrage/processed/latest/approval_candidates.csv
 data/fifa_arbitrage/processed/latest/suggested_mappings.csv
 ```
 
-`approval_candidates.csv` lists each discovered venue market with market type, subject, year, settlement summary, token IDs, rules text, raw payload, and liquidity hints. `suggested_mappings.csv` proposes high-confidence Polymarket/Kalshi pairs, but every row stays `review_required`; copy only verified pairs into `config/fifa_market_mappings.csv` and set `status=approved`. The files under `processed/` are cumulative history; `processed/latest/` is just the newest run.
+`approval_candidates.csv` lists each discovered venue market with market type, event title, event date, normalized event match key, outcome label, settlement summary, token IDs, rules text, raw payload, and liquidity hints. `suggested_mappings.csv` proposes high-confidence Polymarket/Kalshi pairs using exact event/outcome keys for game-winner markets, but every row stays `review_required`; copy only verified pairs into `config/fifa_market_mappings.csv` and set `status=approved`. The files under `processed/` are cumulative history; `processed/latest/` is just the newest run.
 
 Run the local scheduler loop:
 

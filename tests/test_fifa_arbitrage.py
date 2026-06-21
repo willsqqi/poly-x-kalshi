@@ -86,6 +86,44 @@ def test_kalshi_event_discovery_expands_world_soccer_cup_markets() -> None:
     assert markets[0]["_event_context_title"] == "Who will host the 2038 World Soccer Cup?"
 
 
+def test_world_cup_game_event_children_create_exact_match_suggestions() -> None:
+    with httpx.Client(transport=httpx.MockTransport(_world_cup_game_handler)) as client:
+        polymarket = fetch_polymarket_fifa_markets(client, max_markets=20, page_size=20)
+        kalshi = fetch_kalshi_fifa_markets(client, max_markets=20, page_size=20)
+
+    assert {market["slug"] for market in polymarket} == {
+        "fifwc-esp-ksa-2026-06-21-esp",
+        "fifwc-esp-ksa-2026-06-21-draw",
+        "fifwc-esp-ksa-2026-06-21-ksa",
+    }
+    assert {market["ticker"] for market in kalshi} == {
+        "KXWCGAME-26JUN21ESPKSA-ESP",
+        "KXWCGAME-26JUN21ESPKSA-TIE",
+        "KXWCGAME-26JUN21ESPKSA-KSA",
+    }
+
+    candidates = normalize_fifa_candidates(
+        polymarket,
+        kalshi,
+        run_id="esp-ksa-run",
+        retrieved_at="2026-06-21T00:00:00Z",
+    )
+    approval = build_approval_candidates(candidates)
+    suggestions = suggest_manual_mappings(approval, min_score=72)
+
+    assert set(approval["event_match_key"]) == {"2026-06-21|saudi arabia|spain"}
+    assert set(approval["outcome_label"]) == {"Spain", "Saudi Arabia", "Tie"}
+    assert len(suggestions) == 3
+
+    by_outcome = {row["outcome_label"]: row for _, row in suggestions.iterrows()}
+    assert by_outcome["Spain"]["polymarket_slug"] == "fifwc-esp-ksa-2026-06-21-esp"
+    assert by_outcome["Spain"]["kalshi_ticker"] == "KXWCGAME-26JUN21ESPKSA-ESP"
+    assert by_outcome["Spain"]["match_score"] == 100.0
+    assert by_outcome["Spain"]["draw_handling"] == "draw/Tie is a separate outcome; team-winner markets resolve No on draw"
+    assert by_outcome["Tie"]["polymarket_slug"] == "fifwc-esp-ksa-2026-06-21-draw"
+    assert by_outcome["Tie"]["kalshi_ticker"] == "KXWCGAME-26JUN21ESPKSA-TIE"
+
+
 def test_approval_candidates_classify_market_types_and_suggest_pairs() -> None:
     candidates = normalize_fifa_candidates(
         [
@@ -370,6 +408,22 @@ def _combined_handler(request: httpx.Request) -> httpx.Response:
     raise AssertionError(f"Unexpected request: {request.url}")
 
 
+def _world_cup_game_handler(request: httpx.Request) -> httpx.Response:
+    if request.url.host == "gamma-api.polymarket.com" and request.url.path == "/markets":
+        return httpx.Response(200, json=[])
+    if request.url.host == "gamma-api.polymarket.com" and request.url.path == "/events":
+        return httpx.Response(200, json=[_polymarket_esp_ksa_event()])
+    if request.url.host == "external-api.kalshi.com" and request.url.path == "/trade-api/v2/events":
+        if request.url.params.get("series_ticker") == "KXWCGAME":
+            return httpx.Response(200, json={"events": [_kalshi_esp_ksa_event()], "cursor": ""})
+        return httpx.Response(200, json={"events": [], "cursor": ""})
+    if request.url.host == "external-api.kalshi.com" and request.url.path == "/trade-api/v2/markets":
+        if request.url.params.get("event_ticker") == "KXWCGAME-26JUN21ESPKSA":
+            return httpx.Response(200, json={"markets": _kalshi_esp_ksa_markets(), "cursor": ""})
+        return httpx.Response(200, json={"markets": [], "cursor": ""})
+    raise AssertionError(f"Unexpected request: {request.url}")
+
+
 def _polymarket_hit() -> dict:
     return {
         "id": "pm-market",
@@ -382,6 +436,105 @@ def _polymarket_hit() -> dict:
         "clobTokenIds": '["pm-yes", "pm-no"]',
         "description": "2026 FIFA World Cup match winner in regular time.",
     }
+
+
+def _polymarket_esp_ksa_event() -> dict:
+    return {
+        "id": "351751",
+        "ticker": "fifwc-esp-ksa-2026-06-21",
+        "slug": "fifwc-esp-ksa-2026-06-21",
+        "title": "Spain vs. Saudi Arabia",
+        "description": "This event is for the upcoming FIFA World Cup game, scheduled for Sunday, June 21, 2026 between Spain and Saudi Arabia.",
+        "resolutionSource": "https://www.fifa.com/fifaplus/en/tournaments/mens/worldcup",
+        "active": True,
+        "closed": False,
+        "endDate": "2026-06-21T16:00:00Z",
+        "sport": "soccer",
+        "markets": [
+            {
+                "id": "1897161",
+                "question": "Will Spain win on 2026-06-21?",
+                "conditionId": "0xesp",
+                "slug": "fifwc-esp-ksa-2026-06-21-esp",
+                "description": "If Spain wins, this market will resolve to Yes. Otherwise, this market will resolve to No.",
+                "outcomes": '["Yes", "No"]',
+                "clobTokenIds": '["pm-esp-yes", "pm-esp-no"]',
+                "active": True,
+                "closed": False,
+                "endDate": "2026-06-21T16:00:00Z",
+            },
+            {
+                "id": "1897162",
+                "question": "Will Spain vs. Saudi Arabia end in a draw?",
+                "conditionId": "0xdraw",
+                "slug": "fifwc-esp-ksa-2026-06-21-draw",
+                "description": "If the game ends in a draw, this market will resolve to Yes. Otherwise, this market will resolve to No.",
+                "outcomes": '["Yes", "No"]',
+                "clobTokenIds": '["pm-draw-yes", "pm-draw-no"]',
+                "active": True,
+                "closed": False,
+                "endDate": "2026-06-21T16:00:00Z",
+            },
+            {
+                "id": "1897163",
+                "question": "Will Saudi Arabia win on 2026-06-21?",
+                "conditionId": "0xksa",
+                "slug": "fifwc-esp-ksa-2026-06-21-ksa",
+                "description": "If Saudi Arabia wins, this market will resolve to Yes. Otherwise, this market will resolve to No.",
+                "outcomes": '["Yes", "No"]',
+                "clobTokenIds": '["pm-ksa-yes", "pm-ksa-no"]',
+                "active": True,
+                "closed": False,
+                "endDate": "2026-06-21T16:00:00Z",
+            },
+        ],
+    }
+
+
+def _kalshi_esp_ksa_event() -> dict:
+    return {
+        "category": "Sports",
+        "event_ticker": "KXWCGAME-26JUN21ESPKSA",
+        "mutually_exclusive": True,
+        "product_metadata": {"competition": "World Soccer Cup", "competition_scope": "Game"},
+        "series_ticker": "KXWCGAME",
+        "sub_title": "ESP vs KSA (Jun 21)",
+        "title": "Spain vs Saudi Arabia",
+    }
+
+
+def _kalshi_esp_ksa_markets() -> list[dict]:
+    base = {
+        "event_ticker": "KXWCGAME-26JUN21ESPKSA",
+        "title": "Spain vs Saudi Arabia Winner?",
+        "status": "active",
+        "expected_expiration_time": "2026-06-21T19:00:00Z",
+        "close_time": "2026-07-05T16:00:00Z",
+        "rules_secondary": "The market refers to the Spain vs Saudi Arabia professional FIFA World Cup soccer game after 90 minutes plus stoppage time. Extra time and penalties are excluded.",
+    }
+    return [
+        {
+            **base,
+            "ticker": "KXWCGAME-26JUN21ESPKSA-ESP",
+            "yes_sub_title": "Spain",
+            "no_sub_title": "Spain",
+            "rules_primary": "If Spain wins the Spain vs Saudi Arabia professional FIFA World Cup soccer game originally scheduled for Jun 21, 2026 after 90 minutes plus stoppage time, then the market resolves to Yes.",
+        },
+        {
+            **base,
+            "ticker": "KXWCGAME-26JUN21ESPKSA-TIE",
+            "yes_sub_title": "Tie",
+            "no_sub_title": "Tie",
+            "rules_primary": "If Tie wins the Spain vs Saudi Arabia professional FIFA World Cup soccer game originally scheduled for Jun 21, 2026 after 90 minutes plus stoppage time, then the market resolves to Yes.",
+        },
+        {
+            **base,
+            "ticker": "KXWCGAME-26JUN21ESPKSA-KSA",
+            "yes_sub_title": "Saudi Arabia",
+            "no_sub_title": "Saudi Arabia",
+            "rules_primary": "If Saudi Arabia wins the Spain vs Saudi Arabia professional FIFA World Cup soccer game originally scheduled for Jun 21, 2026 after 90 minutes plus stoppage time, then the market resolves to Yes.",
+        },
+    ]
 
 
 def _polymarket_miss() -> dict:

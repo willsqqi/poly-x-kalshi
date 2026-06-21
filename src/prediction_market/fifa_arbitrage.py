@@ -19,6 +19,8 @@ from .collectors import KALSHI_BASE, POLYMARKET_CLOB_BASE, POLYMARKET_GAMMA_BASE
 from .utils import best_ask, best_bid, compact_json, parse_json_array, parse_timestamp, to_float, total_size, utc_now_iso
 
 FIFA_KEYWORDS = ("world cup", "world soccer cup", "world soccer", "worldcup", "fifa")
+POLYMARKET_EVENT_TAG_SLUGS = ("soccer", "world-cup")
+KALSHI_FIFA_SERIES_TICKERS = ("KXWCGAME", "KXWCHOST")
 DEFAULT_MAPPING_PATH = "config/fifa_market_mappings.csv"
 DEFAULT_OUTPUT_DIR = "data/fifa_arbitrage"
 DEFAULT_INTERVAL_SECONDS = 60.0
@@ -51,6 +53,10 @@ CANDIDATE_COLUMNS = [
 APPROVAL_CANDIDATE_COLUMNS = [
     *CANDIDATE_COLUMNS,
     "market_type",
+    "event_title",
+    "event_date",
+    "event_match_key",
+    "outcome_label",
     "subject",
     "event_year",
     "event_timeframe",
@@ -66,11 +72,20 @@ SUGGESTED_MAPPING_COLUMNS = [
     "suggestion_status",
     "market_type",
     "review_notes",
+    "mapping_id",
+    "event_name",
+    "proposition",
+    "polymarket_event_title",
+    "kalshi_event_title",
+    "event_match_key",
+    "outcome_label",
     "polymarket_market_id",
     "polymarket_slug",
     "polymarket_title",
     "polymarket_yes_token_id",
     "polymarket_no_token_id",
+    "polymarket_yes_outcome",
+    "polymarket_no_outcome",
     "polymarket_outcomes",
     "polymarket_settlement_summary",
     "kalshi_ticker",
@@ -235,7 +250,71 @@ def fetch_polymarket_fifa_markets(
             break
         if sleep_seconds:
             time.sleep(sleep_seconds)
+
+    for event in fetch_polymarket_fifa_events(client, max_events=max_markets, page_size=page_size, sleep_seconds=sleep_seconds):
+        event_context = _polymarket_event_context(event)
+        for market in event.get("markets", []):
+            if not isinstance(market, dict):
+                continue
+            market_id = str(market.get("conditionId") or market.get("id") or "")
+            if market_id in seen_ids:
+                continue
+            if not _has_two_polymarket_tokens(market):
+                continue
+            if market.get("active") is not True or market.get("closed") is True:
+                continue
+            enriched_market = {**market, **event_context}
+            if is_fifa_market(_polymarket_search_payload(enriched_market)):
+                markets.append(enriched_market)
+                seen_ids.add(market_id)
     return markets
+
+
+def fetch_polymarket_fifa_events(
+    client: httpx.Client,
+    max_events: int = 1_000,
+    page_size: int = 200,
+    sleep_seconds: float = 0.0,
+) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    seen_slugs: set[str] = set()
+    for tag_slug in POLYMARKET_EVENT_TAG_SLUGS:
+        inspected = 0
+        offset = 0
+        while inspected < max_events:
+            limit = min(page_size, max_events - inspected)
+            payload = request_json_with_retry(
+                client,
+                f"{POLYMARKET_GAMMA_BASE}/events",
+                params={
+                    "active": "true",
+                    "closed": "false",
+                    "limit": limit,
+                    "offset": offset,
+                    "tag_slug": tag_slug,
+                    "order": "volume",
+                    "ascending": "false",
+                },
+            )
+            batch = _events_from_payload(payload)
+            if not batch:
+                break
+            inspected += len(batch)
+            offset += len(batch)
+            for event in batch:
+                slug = str(event.get("slug") or event.get("ticker") or event.get("id") or "")
+                if not slug or slug in seen_slugs:
+                    continue
+                if event.get("active") is not True or event.get("closed") is True:
+                    continue
+                if is_fifa_market(_polymarket_event_search_payload(event)):
+                    events.append(event)
+                    seen_slugs.add(slug)
+            if len(batch) < limit:
+                break
+            if sleep_seconds:
+                time.sleep(sleep_seconds)
+    return events
 
 
 def fetch_kalshi_fifa_markets(
@@ -296,32 +375,35 @@ def fetch_kalshi_fifa_events(
 ) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     seen_event_tickers: set[str] = set()
-    inspected = 0
-    cursor = ""
-    while inspected < max_events:
-        limit = min(page_size, max_events - inspected)
-        params: dict[str, Any] = {"status": "open", "limit": limit}
-        if cursor:
-            params["cursor"] = cursor
-        payload = request_json_with_retry(client, f"{KALSHI_BASE}/events", params=params)
-        batch = payload.get("events", []) if isinstance(payload, dict) else []
-        if not batch:
-            break
-        inspected += len(batch)
-        for event in batch:
-            if not isinstance(event, dict):
-                continue
-            event_ticker = str(event.get("event_ticker") or "")
-            if not event_ticker or event_ticker in seen_event_tickers:
-                continue
-            if is_fifa_market(_kalshi_event_search_payload(event)):
-                events.append(event)
-                seen_event_tickers.add(event_ticker)
-        cursor = str(payload.get("cursor") or "") if isinstance(payload, dict) else ""
-        if not cursor or len(batch) < limit:
-            break
-        if sleep_seconds:
-            time.sleep(sleep_seconds)
+    query_templates: list[dict[str, Any]] = [{"status": "open"}]
+    query_templates.extend({"status": "open", "series_ticker": series_ticker} for series_ticker in KALSHI_FIFA_SERIES_TICKERS)
+    for query_template in query_templates:
+        inspected = 0
+        cursor = ""
+        while inspected < max_events:
+            limit = min(page_size, max_events - inspected)
+            params: dict[str, Any] = {**query_template, "limit": limit}
+            if cursor:
+                params["cursor"] = cursor
+            payload = request_json_with_retry(client, f"{KALSHI_BASE}/events", params=params)
+            batch = payload.get("events", []) if isinstance(payload, dict) else []
+            if not batch:
+                break
+            inspected += len(batch)
+            for event in batch:
+                if not isinstance(event, dict):
+                    continue
+                event_ticker = str(event.get("event_ticker") or "")
+                if not event_ticker or event_ticker in seen_event_tickers:
+                    continue
+                if is_fifa_market(_kalshi_event_search_payload(event)) or str(event.get("series_ticker") or "") in KALSHI_FIFA_SERIES_TICKERS:
+                    events.append(event)
+                    seen_event_tickers.add(event_ticker)
+            cursor = str(payload.get("cursor") or "") if isinstance(payload, dict) else ""
+            if not cursor or len(batch) < limit:
+                break
+            if sleep_seconds:
+                time.sleep(sleep_seconds)
     return events
 
 
@@ -387,12 +469,19 @@ def build_approval_candidates(candidates: pd.DataFrame) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     for _, row in candidates.iterrows():
         market_type = classify_market_type(row)
+        event_title = extract_event_title(row)
+        event_date = extract_event_date(row)
+        outcome_label = extract_outcome_label(row)
         subject = extract_market_subject(row)
         settlement_summary = summarize_settlement(row)
         rows.append(
             {
                 **{column: row.get(column, "") for column in CANDIDATE_COLUMNS},
                 "market_type": market_type,
+                "event_title": event_title,
+                "event_date": event_date,
+                "event_match_key": extract_event_match_key(row, event_title=event_title, event_date=event_date),
+                "outcome_label": outcome_label,
                 "subject": subject,
                 "event_year": extract_event_year(row),
                 "event_timeframe": infer_event_timeframe(row),
@@ -412,7 +501,7 @@ def suggest_manual_mappings(approval_candidates: pd.DataFrame, min_score: float 
     rows: list[dict[str, Any]] = []
     for _, pm in polymarket.iterrows():
         for _, ks in kalshi.iterrows():
-            if pm.get("market_type") != ks.get("market_type"):
+            if not _candidate_types_compatible(pm, ks):
                 continue
             score = candidate_match_score(pm, ks)
             if score < min_score:
@@ -426,6 +515,10 @@ def suggest_manual_mappings(approval_candidates: pd.DataFrame, min_score: float 
 
 def classify_market_type(row: pd.Series | dict[str, Any]) -> str:
     text = _candidate_text(row)
+    if "end in a draw" in text or " tie" in text or "winner?" in text:
+        return "match_winner"
+    if any(term in text for term in ("win?", " win on ", " wins the ")):
+        return "match_winner"
     if "both teams to score" in text or "btts" in text:
         return "both_teams_score"
     if any(term in text for term in ("spread", "handicap", "(-", "(+")):
@@ -444,12 +537,16 @@ def classify_market_type(row: pd.Series | dict[str, Any]) -> str:
         return "advancement"
     if any(term in text for term in ("host", "hosts", "announced as host", "announced as hosts")):
         return "host_country"
-    if any(term in text for term in (" vs ", " vs. ", "win?")):
+    if any(term in text for term in (" vs ", " vs. ")):
         return "match_winner"
     return "other"
 
 
 def extract_market_subject(row: pd.Series | dict[str, Any]) -> str:
+    event_title = extract_event_title(row)
+    outcome_label = extract_outcome_label(row)
+    if event_title and outcome_label and classify_market_type(row) == "match_winner":
+        return f"{event_title}: {outcome_label}"
     raw = _raw_payload(row)
     if isinstance(raw.get("custom_strike"), dict) and raw["custom_strike"].get("Location"):
         return str(raw["custom_strike"]["Location"])
@@ -463,7 +560,95 @@ def extract_market_subject(row: pd.Series | dict[str, Any]) -> str:
     return title.strip()
 
 
+def extract_event_title(row: pd.Series | dict[str, Any]) -> str:
+    raw = _raw_payload(row)
+    for key in ("_event_context_title", "event_title"):
+        value = raw.get(key)
+        if value:
+            return str(value).strip()
+    if isinstance(raw.get("_event_context_payload"), dict) and raw["_event_context_payload"].get("title"):
+        return str(raw["_event_context_payload"]["title"]).strip()
+    title = str(_row_get(row, "title") or "").strip()
+    title = re.sub(r"\s+Winner\?$", "", title, flags=re.IGNORECASE).strip()
+    if ":" in title:
+        title = title.split(":", 1)[0].strip()
+    match = re.search(r"Will\s+(.+?)\s+win\s+on\s+\d{4}-\d{2}-\d{2}\??", title, flags=re.IGNORECASE)
+    if match:
+        outcome = match.group(1).strip()
+        raw_title = str(raw.get("_event_context_title") or "")
+        return raw_title or outcome
+    match = re.search(r"Will\s+(.+?)\s+end\s+in\s+a\s+draw\??", title, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return title
+
+
+def extract_event_date(row: pd.Series | dict[str, Any]) -> str:
+    raw = _raw_payload(row)
+    for value in (
+        raw.get("occurrence_datetime"),
+        raw.get("expected_expiration_time"),
+        raw.get("_event_context_start_time"),
+        raw.get("_event_context_end_date"),
+        raw.get("endDate"),
+        raw.get("endDateIso"),
+        raw.get("close_time"),
+        _row_get(row, "close_time"),
+    ):
+        if _is_blank(value):
+            continue
+        parsed = parse_timestamp(value)
+        if parsed:
+            return parsed[:10]
+    text = _candidate_text(row)
+    match = re.search(r"\b(20\d{2})-(\d{2})-(\d{2})\b", text)
+    if match:
+        return f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
+    match = re.search(
+        r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{1,2}),\s*(20\d{2})\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        month = _month_number(match.group(0).split()[0])
+        if month:
+            return f"{match.group(2)}-{month:02d}-{int(match.group(1)):02d}"
+    return ""
+
+
+def extract_event_match_key(row: pd.Series | dict[str, Any], event_title: str | None = None, event_date: str | None = None) -> str:
+    event_title = event_title if event_title is not None else extract_event_title(row)
+    event_date = event_date if event_date is not None else extract_event_date(row)
+    teams = _teams_from_match_title(event_title)
+    if len(teams) != 2:
+        return ""
+    normalized_teams = sorted(_normalize_name(team) for team in teams)
+    if not all(normalized_teams):
+        return ""
+    return "|".join([event_date or "", *normalized_teams])
+
+
+def extract_outcome_label(row: pd.Series | dict[str, Any]) -> str:
+    raw = _raw_payload(row)
+    venue = str(_row_get(row, "venue") or "")
+    if venue == "kalshi":
+        return str(raw.get("yes_sub_title") or raw.get("subtitle") or "").strip()
+    title = str(_row_get(row, "title") or "")
+    match = re.search(r"Will\s+(.+?)\s+win\s+on\s+\d{4}-\d{2}-\d{2}\??", title, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    if re.search(r"end\s+in\s+a\s+draw", title, flags=re.IGNORECASE):
+        return "Tie"
+    outcomes = parse_json_array(_row_get(row, "outcomes"))
+    if len(outcomes) == 2 and outcomes[0] not in ("Yes", "Over"):
+        return str(outcomes[0])
+    return ""
+
+
 def extract_event_year(row: pd.Series | dict[str, Any]) -> str:
+    event_date = extract_event_date(row)
+    if event_date:
+        return event_date[:4]
     text = _candidate_text(row)
     match = re.search(r"\b(20\d{2})\b", text)
     return match.group(1) if match else ""
@@ -532,11 +717,19 @@ def approval_notes_for_market_type(market_type: str) -> str:
 
 
 def candidate_match_score(left: pd.Series | dict[str, Any], right: pd.Series | dict[str, Any]) -> float:
+    left_event_key = str(_row_get(left, "event_match_key") or "")
+    right_event_key = str(_row_get(right, "event_match_key") or "")
+    left_outcome = _normalize_name(_row_get(left, "outcome_label"))
+    right_outcome = _normalize_name(_row_get(right, "outcome_label"))
+    if left_event_key and left_event_key == right_event_key and left_outcome and left_outcome == right_outcome:
+        return 100.0
     subject_score = fuzz.token_set_ratio(str(_row_get(left, "subject") or ""), str(_row_get(right, "subject") or ""))
     title_score = fuzz.token_set_ratio(str(_row_get(left, "title") or ""), str(_row_get(right, "title") or ""))
+    event_score = fuzz.token_set_ratio(str(_row_get(left, "event_title") or ""), str(_row_get(right, "event_title") or ""))
+    outcome_score = fuzz.token_set_ratio(str(_row_get(left, "outcome_label") or ""), str(_row_get(right, "outcome_label") or ""))
     year_score = 100.0 if _row_get(left, "event_year") and _row_get(left, "event_year") == _row_get(right, "event_year") else 0.0
     type_score = 100.0 if _row_get(left, "market_type") == _row_get(right, "market_type") else 0.0
-    return float(0.45 * subject_score + 0.25 * title_score + 0.20 * year_score + 0.10 * type_score)
+    return float(0.25 * subject_score + 0.20 * event_score + 0.20 * outcome_score + 0.15 * title_score + 0.15 * year_score + 0.05 * type_score)
 
 
 def load_manual_mappings(path: str | Path = DEFAULT_MAPPING_PATH) -> pd.DataFrame:
@@ -1160,18 +1353,30 @@ def _score_direction(
 
 def _suggested_mapping_row(pm: pd.Series, ks: pd.Series, score: float) -> dict[str, Any]:
     market_type = str(pm.get("market_type") or "")
+    mapping_id = f"{_slugify(str(pm.get('ticker_or_slug') or pm.get('market_id')))}__{_slugify(str(ks.get('ticker_or_slug')))}"
+    event_name = str(pm.get("event_title") or ks.get("event_title") or "")
+    outcome_label = str(pm.get("outcome_label") or ks.get("outcome_label") or "")
     return {
         "run_id": pm.get("run_id", ""),
-        "suggested_mapping_id": f"{_slugify(str(pm.get('ticker_or_slug') or pm.get('market_id')))}__{_slugify(str(ks.get('ticker_or_slug')))}",
+        "suggested_mapping_id": mapping_id,
         "match_score": round(score, 2),
         "suggestion_status": "review_required",
         "market_type": market_type,
         "review_notes": _suggestion_review_notes(pm, ks),
+        "mapping_id": mapping_id,
+        "event_name": event_name,
+        "proposition": _suggested_proposition(event_name, outcome_label, market_type),
+        "polymarket_event_title": pm.get("event_title", ""),
+        "kalshi_event_title": ks.get("event_title", ""),
+        "event_match_key": pm.get("event_match_key", "") or ks.get("event_match_key", ""),
+        "outcome_label": outcome_label,
         "polymarket_market_id": pm.get("market_id", ""),
         "polymarket_slug": pm.get("ticker_or_slug", ""),
         "polymarket_title": pm.get("title", ""),
         "polymarket_yes_token_id": pm.get("yes_token_id", ""),
         "polymarket_no_token_id": pm.get("no_token_id", ""),
+        "polymarket_yes_outcome": "Yes",
+        "polymarket_no_outcome": "No",
         "polymarket_outcomes": pm.get("outcomes", ""),
         "polymarket_settlement_summary": pm.get("settlement_summary", ""),
         "kalshi_ticker": ks.get("market_id", ""),
@@ -1187,6 +1392,10 @@ def _suggested_mapping_row(pm: pd.Series, ks: pd.Series, score: float) -> dict[s
 
 def _suggestion_review_notes(pm: pd.Series, ks: pd.Series) -> str:
     notes = []
+    if pm.get("event_match_key") and ks.get("event_match_key") and pm.get("event_match_key") != ks.get("event_match_key"):
+        notes.append(f"event mismatch: polymarket={pm.get('event_match_key')} kalshi={ks.get('event_match_key')}")
+    if _normalize_name(pm.get("outcome_label")) and _normalize_name(pm.get("outcome_label")) != _normalize_name(ks.get("outcome_label")):
+        notes.append(f"outcome mismatch: polymarket={pm.get('outcome_label')} kalshi={ks.get('outcome_label')}")
     if pm.get("event_year") != ks.get("event_year"):
         notes.append(f"year mismatch: polymarket={pm.get('event_year') or 'unknown'} kalshi={ks.get('event_year') or 'unknown'}")
     if pm.get("market_type") != ks.get("market_type"):
@@ -1194,25 +1403,31 @@ def _suggestion_review_notes(pm: pd.Series, ks: pd.Series) -> str:
     if pm.get("market_type") == "host_country":
         notes.append("verify host country/group and multi-host handling")
     if pm.get("market_type") == "match_winner":
-        notes.append("verify draw, extra time, penalties, and postponement rules")
+        notes.append("verify regular-time result, draw/Tie handling, extra time, penalties, and cancellation rules")
     return "; ".join(notes) or "review settlement summaries before approval"
 
 
 def _default_draw_handling(market_type: str) -> str:
     if market_type == "host_country":
         return "not applicable"
+    if market_type == "match_winner":
+        return "draw/Tie is a separate outcome; team-winner markets resolve No on draw"
     return "REVIEW REQUIRED"
 
 
 def _default_extra_time_handling(market_type: str) -> str:
     if market_type == "host_country":
         return "not applicable"
+    if market_type == "match_winner":
+        return "regular time plus stoppage time only; extra time excluded"
     return "REVIEW REQUIRED"
 
 
 def _default_penalties_handling(market_type: str) -> str:
     if market_type == "host_country":
         return "not applicable"
+    if market_type == "match_winner":
+        return "penalties excluded"
     return "REVIEW REQUIRED"
 
 
@@ -1267,6 +1482,8 @@ def _candidate_text(row: pd.Series | dict[str, Any]) -> str:
         {
             "title": _row_get(row, "title"),
             "subtitle": _row_get(row, "subtitle"),
+            "event_title": _row_get(row, "event_title"),
+            "outcome_label": _row_get(row, "outcome_label"),
             "ticker_or_slug": _row_get(row, "ticker_or_slug"),
             "outcomes": _row_get(row, "outcomes"),
             "rules_text": _row_get(row, "rules_text"),
@@ -1300,6 +1517,91 @@ def _slugify(value: str) -> str:
     return compact[:80] or "candidate"
 
 
+def _candidate_types_compatible(left: pd.Series | dict[str, Any], right: pd.Series | dict[str, Any]) -> bool:
+    market_type = str(_row_get(left, "market_type") or "")
+    if market_type != str(_row_get(right, "market_type") or ""):
+        return False
+    left_outcome = _normalize_name(_row_get(left, "outcome_label"))
+    right_outcome = _normalize_name(_row_get(right, "outcome_label"))
+    if market_type == "match_winner":
+        left_event_key = str(_row_get(left, "event_match_key") or "")
+        right_event_key = str(_row_get(right, "event_match_key") or "")
+        if left_event_key and right_event_key and left_event_key != right_event_key:
+            return False
+        if left_outcome and right_outcome and left_outcome != right_outcome:
+            return False
+    return True
+
+
+def _suggested_proposition(event_name: str, outcome_label: str, market_type: str) -> str:
+    if market_type == "match_winner" and outcome_label:
+        if _normalize_name(outcome_label) == "tie":
+            return f"{event_name} to end in a draw in regular time"
+        return f"{outcome_label} to win in regular time"
+    return outcome_label or event_name
+
+
+def _teams_from_match_title(value: Any) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    text = re.sub(r"\s+Winner\?$", "", text, flags=re.IGNORECASE).strip()
+    parts = re.split(r"\s+vs\.?\s+", text, maxsplit=1, flags=re.IGNORECASE)
+    if len(parts) != 2:
+        return []
+    return [part.strip(" ?") for part in parts]
+
+
+def _normalize_name(value: Any) -> str:
+    text = str(value or "").lower()
+    text = text.replace("&", " and ")
+    text = text.replace("draw", "tie")
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return " ".join(text.split())
+
+
+def _is_blank(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, float) and pd.isna(value):
+        return True
+    if isinstance(value, str) and not value.strip():
+        return True
+    return False
+
+
+def _month_number(value: str) -> int | None:
+    months = {
+        "jan": 1,
+        "feb": 2,
+        "mar": 3,
+        "apr": 4,
+        "may": 5,
+        "jun": 6,
+        "jul": 7,
+        "aug": 8,
+        "sep": 9,
+        "oct": 10,
+        "nov": 11,
+        "dec": 12,
+    }
+    return months.get(str(value or "")[:3].lower())
+
+
+def _polymarket_event_context(event: dict[str, Any]) -> dict[str, Any]:
+    event_payload = {key: value for key, value in event.items() if key != "markets"}
+    return {
+        "_event_context_id": event.get("id"),
+        "_event_context_slug": event.get("slug"),
+        "_event_context_title": event.get("title"),
+        "_event_context_start_time": event.get("startTime") or event.get("eventDate") or event.get("startDate"),
+        "_event_context_end_date": event.get("endDate"),
+        "_event_context_sport": event.get("sport"),
+        "_event_context_teams": event.get("teams"),
+        "_event_context_payload": event_payload,
+    }
+
+
 def _polymarket_search_payload(market: dict[str, Any]) -> dict[str, Any]:
     return {
         "question": market.get("question"),
@@ -1308,7 +1610,26 @@ def _polymarket_search_payload(market: dict[str, Any]) -> dict[str, Any]:
         "category": market.get("category"),
         "description": market.get("description"),
         "events": market.get("events"),
+        "event_context_title": market.get("_event_context_title"),
+        "event_context_slug": market.get("_event_context_slug"),
+        "event_context_payload": market.get("_event_context_payload"),
         "resolutionSource": market.get("resolutionSource"),
+    }
+
+
+def _polymarket_event_search_payload(event: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ticker": event.get("ticker"),
+        "slug": event.get("slug"),
+        "title": event.get("title"),
+        "description": event.get("description"),
+        "sport": event.get("sport"),
+        "series": event.get("series"),
+        "seriesSlug": event.get("seriesSlug"),
+        "tags": event.get("tags"),
+        "teams": event.get("teams"),
+        "eventMetadata": event.get("eventMetadata"),
+        "resolutionSource": event.get("resolutionSource"),
     }
 
 
@@ -1324,6 +1645,8 @@ def _kalshi_search_payload(market: dict[str, Any]) -> dict[str, Any]:
         "yes_sub_title": market.get("yes_sub_title"),
         "no_sub_title": market.get("no_sub_title"),
         "category": market.get("category"),
+        "product_metadata": market.get("product_metadata"),
+        "event_context_payload": market.get("_event_context_payload"),
         "rules_primary": market.get("rules_primary"),
         "rules_secondary": market.get("rules_secondary"),
     }
@@ -1336,6 +1659,8 @@ def _kalshi_event_search_payload(event: dict[str, Any]) -> dict[str, Any]:
         "title": event.get("title"),
         "category": event.get("category"),
         "sub_title": event.get("sub_title"),
+        "product_metadata": event.get("product_metadata"),
+        "settlement_sources": event.get("settlement_sources"),
     }
 
 
@@ -1345,6 +1670,15 @@ def _markets_from_payload(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, dict):
         markets = payload.get("markets", [])
         return [market for market in markets if isinstance(market, dict)]
+    return []
+
+
+def _events_from_payload(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [event for event in payload if isinstance(event, dict)]
+    if isinstance(payload, dict):
+        events = payload.get("events", [])
+        return [event for event in events if isinstance(event, dict)]
     return []
 
 
