@@ -7,8 +7,11 @@ import pandas as pd
 
 from prediction_market.fifa_arbitrage import (
     ALERT_COLUMNS,
+    APPROVAL_CANDIDATE_COLUMNS,
     MAPPING_COLUMNS,
+    SUGGESTED_MAPPING_COLUMNS,
     approved_mappings,
+    build_approval_candidates,
     fetch_kalshi_fifa_markets,
     fetch_mapped_orderbooks,
     fetch_polymarket_fifa_markets,
@@ -16,6 +19,7 @@ from prediction_market.fifa_arbitrage import (
     run_fifa_snapshot,
     score_cross_market_arbitrage,
     snapshot_cli_main,
+    suggest_manual_mappings,
     validate_manual_mappings,
     watch_fifa_arbitrage,
 )
@@ -80,6 +84,52 @@ def test_kalshi_event_discovery_expands_world_soccer_cup_markets() -> None:
 
     assert [market["ticker"] for market in markets] == ["KXWCHOST-2038-USA"]
     assert markets[0]["_event_context_title"] == "Who will host the 2038 World Soccer Cup?"
+
+
+def test_approval_candidates_classify_market_types_and_suggest_pairs() -> None:
+    candidates = normalize_fifa_candidates(
+        [
+            {
+                "id": "pm-host",
+                "conditionId": "0xhost",
+                "slug": "will-germany-host-2038-world-cup",
+                "question": "Will Germany host the 2038 FIFA World Cup?",
+                "active": True,
+                "closed": False,
+                "outcomes": '["Yes", "No"]',
+                "clobTokenIds": '["pm-host-yes", "pm-host-no"]',
+                "description": "Resolves Yes if Germany is announced as a 2038 FIFA World Cup host.",
+            },
+            _polymarket_hit(),
+        ],
+        [
+            {
+                "ticker": "KXWCHOST-2038-GER",
+                "title": "Will Germany be announced as a host for the 2038 Men's FIFA World Cup?",
+                "status": "active",
+                "yes_sub_title": "Germany",
+                "no_sub_title": "Germany",
+                "rules_primary": "If Germany is announced as a host for the 2038 Men's FIFA World Cup, this resolves Yes.",
+                "_event_context_title": "Who will host the 2038 World Soccer Cup?",
+            }
+        ],
+        run_id="approval-run",
+        retrieved_at="2026-06-21T00:00:00Z",
+    )
+
+    approval = build_approval_candidates(candidates)
+    suggestions = suggest_manual_mappings(approval, min_score=70)
+
+    assert list(approval.columns) == APPROVAL_CANDIDATE_COLUMNS
+    by_slug = {row["ticker_or_slug"]: row for _, row in approval.iterrows()}
+    assert by_slug["will-germany-host-2038-world-cup"]["market_type"] == "host_country"
+    assert by_slug["will-germany-host-2038-world-cup"]["event_year"] == "2038"
+    assert by_slug["usa-france-world-cup"]["market_type"] == "match_winner"
+    assert by_slug["KXWCHOST-2038-GER"]["event_year"] == "2038"
+    assert not suggestions.empty
+    assert list(suggestions.columns) == SUGGESTED_MAPPING_COLUMNS
+    assert suggestions.iloc[0]["market_type"] == "host_country"
+    assert suggestions.iloc[0]["kalshi_ticker"] == "KXWCHOST-2038-GER"
 
 
 def test_manual_mapping_validation_requires_approval_and_settlement_notes() -> None:
@@ -211,10 +261,12 @@ def test_snapshot_cli_writes_valid_no_alert_run_with_empty_mappings(tmp_path: Pa
     runs = pd.read_parquet(tmp_path / "out" / "processed" / "scanner_runs.parquet")
     alerts = pd.read_parquet(tmp_path / "out" / "processed" / "arbitrage_alerts.parquet")
     candidates = pd.read_parquet(tmp_path / "out" / "processed" / "venue_market_candidates.parquet")
+    latest_approval = pd.read_parquet(tmp_path / "out" / "processed" / "latest" / "approval_candidates.parquet")
     assert runs.iloc[0]["status"] == "succeeded"
     assert runs.iloc[0]["alert_count"] == 0
     assert alerts.empty
     assert len(candidates) == 2
+    assert len(latest_approval) == 2
 
 
 def test_snapshot_and_watch_loop_with_mocked_orderbooks(tmp_path: Path) -> None:

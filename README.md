@@ -22,6 +22,15 @@ Run one snapshot:
 poly-x-kalshi-fifa-snapshot
 ```
 
+If the mapping CSV is empty, start from the approval workbench files written by the snapshot:
+
+```text
+data/fifa_arbitrage/processed/latest/approval_candidates.csv
+data/fifa_arbitrage/processed/latest/suggested_mappings.csv
+```
+
+`approval_candidates.csv` lists each discovered venue market with market type, subject, year, settlement summary, token IDs, rules text, raw payload, and liquidity hints. `suggested_mappings.csv` proposes high-confidence Polymarket/Kalshi pairs, but every row stays `review_required`; copy only verified pairs into `config/fifa_market_mappings.csv` and set `status=approved`. The files under `processed/` are cumulative history; `processed/latest/` is just the newest run.
+
 Run the local scheduler loop:
 
 ```bash
@@ -43,10 +52,15 @@ data/fifa_arbitrage/
 │   └── kalshi/
 ├── processed/
 │   ├── venue_market_candidates.parquet
+│   ├── approval_candidates.parquet
+│   ├── suggested_mappings.parquet
 │   ├── manual_mappings_snapshot.parquet
 │   ├── orderbook_snapshots.parquet
 │   ├── arbitrage_alerts.parquet
-│   └── scanner_runs.parquet
+│   ├── scanner_runs.parquet
+│   └── latest/
+│       ├── approval_candidates.csv
+│       └── suggested_mappings.csv
 └── alerts/
     └── arbitrage_alerts.jsonl
 ```

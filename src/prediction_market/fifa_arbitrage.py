@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from collections.abc import Callable
@@ -12,6 +13,7 @@ from typing import Any
 
 import httpx
 import pandas as pd
+from rapidfuzz import fuzz
 
 from .collectors import KALSHI_BASE, POLYMARKET_CLOB_BASE, POLYMARKET_GAMMA_BASE
 from .utils import best_ask, best_bid, compact_json, parse_json_array, parse_timestamp, to_float, total_size, utc_now_iso
@@ -44,6 +46,41 @@ CANDIDATE_COLUMNS = [
     "rules_text",
     "keyword_hits",
     "raw_payload",
+]
+
+APPROVAL_CANDIDATE_COLUMNS = [
+    *CANDIDATE_COLUMNS,
+    "market_type",
+    "subject",
+    "event_year",
+    "event_timeframe",
+    "settlement_summary",
+    "liquidity_hint",
+    "approval_notes",
+]
+
+SUGGESTED_MAPPING_COLUMNS = [
+    "run_id",
+    "suggested_mapping_id",
+    "match_score",
+    "suggestion_status",
+    "market_type",
+    "review_notes",
+    "polymarket_market_id",
+    "polymarket_slug",
+    "polymarket_title",
+    "polymarket_yes_token_id",
+    "polymarket_no_token_id",
+    "polymarket_outcomes",
+    "polymarket_settlement_summary",
+    "kalshi_ticker",
+    "kalshi_title",
+    "kalshi_outcomes",
+    "kalshi_settlement_summary",
+    "draw_handling",
+    "extra_time_handling",
+    "penalties_handling",
+    "settlement_notes",
 ]
 
 MAPPING_COLUMNS = [
@@ -344,6 +381,164 @@ def normalize_fifa_candidates(
     return pd.DataFrame(rows, columns=CANDIDATE_COLUMNS)
 
 
+def build_approval_candidates(candidates: pd.DataFrame) -> pd.DataFrame:
+    if candidates.empty:
+        return pd.DataFrame(columns=APPROVAL_CANDIDATE_COLUMNS)
+    rows: list[dict[str, Any]] = []
+    for _, row in candidates.iterrows():
+        market_type = classify_market_type(row)
+        subject = extract_market_subject(row)
+        settlement_summary = summarize_settlement(row)
+        rows.append(
+            {
+                **{column: row.get(column, "") for column in CANDIDATE_COLUMNS},
+                "market_type": market_type,
+                "subject": subject,
+                "event_year": extract_event_year(row),
+                "event_timeframe": infer_event_timeframe(row),
+                "settlement_summary": settlement_summary,
+                "liquidity_hint": extract_liquidity_hint(row),
+                "approval_notes": approval_notes_for_market_type(market_type),
+            }
+        )
+    return pd.DataFrame(rows, columns=APPROVAL_CANDIDATE_COLUMNS)
+
+
+def suggest_manual_mappings(approval_candidates: pd.DataFrame, min_score: float = 72.0) -> pd.DataFrame:
+    if approval_candidates.empty:
+        return pd.DataFrame(columns=SUGGESTED_MAPPING_COLUMNS)
+    polymarket = approval_candidates[approval_candidates["venue"] == "polymarket"]
+    kalshi = approval_candidates[approval_candidates["venue"] == "kalshi"]
+    rows: list[dict[str, Any]] = []
+    for _, pm in polymarket.iterrows():
+        for _, ks in kalshi.iterrows():
+            if pm.get("market_type") != ks.get("market_type"):
+                continue
+            score = candidate_match_score(pm, ks)
+            if score < min_score:
+                continue
+            rows.append(_suggested_mapping_row(pm, ks, score))
+    frame = pd.DataFrame(rows, columns=SUGGESTED_MAPPING_COLUMNS)
+    if frame.empty:
+        return frame
+    return frame.sort_values(["match_score", "market_type"], ascending=[False, True]).reset_index(drop=True)
+
+
+def classify_market_type(row: pd.Series | dict[str, Any]) -> str:
+    text = _candidate_text(row)
+    if "both teams to score" in text or "btts" in text:
+        return "both_teams_score"
+    if any(term in text for term in ("spread", "handicap", "(-", "(+")):
+        return "spread"
+    if "join" in text:
+        return "transfer"
+    if "highest-scoring" in text or "highest scoring" in text:
+        return "team_stat"
+    if any(term in text for term in ("o/u", "over/under", "over ", "under ", "total")):
+        return "total"
+    if "halftime" in text or "1st half" in text or "first half" in text:
+        return "halftime"
+    if any(term in text for term in ("golden glove", "assists", "ballon d", "player", "top scorer")):
+        return "player_award"
+    if any(term in text for term in ("round of", "quarterfinal", "semifinal", "eliminated", "reach")):
+        return "advancement"
+    if any(term in text for term in ("host", "hosts", "announced as host", "announced as hosts")):
+        return "host_country"
+    if any(term in text for term in (" vs ", " vs. ", "win?")):
+        return "match_winner"
+    return "other"
+
+
+def extract_market_subject(row: pd.Series | dict[str, Any]) -> str:
+    raw = _raw_payload(row)
+    if isinstance(raw.get("custom_strike"), dict) and raw["custom_strike"].get("Location"):
+        return str(raw["custom_strike"]["Location"])
+    title = str(_row_get(row, "title") or "")
+    for prefix in ("Will ", "will "):
+        if title.startswith(prefix):
+            title = title[len(prefix) :]
+    title = title.replace(" be announced as hosts for the 2038 Men's FIFA World Cup?", "")
+    title = title.replace(" be announced as a host for the 2038 Men's FIFA World Cup?", "")
+    title = title.replace("?", "")
+    return title.strip()
+
+
+def extract_event_year(row: pd.Series | dict[str, Any]) -> str:
+    text = _candidate_text(row)
+    match = re.search(r"\b(20\d{2})\b", text)
+    return match.group(1) if match else ""
+
+
+def infer_event_timeframe(row: pd.Series | dict[str, Any]) -> str:
+    market_type = classify_market_type(row)
+    text = _candidate_text(row)
+    if market_type == "host_country":
+        return "host announcement"
+    if "halftime" in text or "1st half" in text or "first half" in text:
+        return "first half"
+    if "extra time" in text:
+        return "includes or concerns extra time"
+    if "group stage" in text:
+        return "group stage"
+    if "round of" in text or "quarterfinal" in text or "semifinal" in text:
+        return "tournament advancement"
+    return "unclear"
+
+
+def summarize_settlement(row: pd.Series | dict[str, Any], max_chars: int = 500) -> str:
+    values = [str(_row_get(row, "title") or ""), str(_row_get(row, "rules_text") or ""), str(_row_get(row, "subtitle") or "")]
+    text = " ".join(value.strip() for value in values if value and value.strip())
+    text = " ".join(text.split())
+    return text[:max_chars]
+
+
+def extract_liquidity_hint(row: pd.Series | dict[str, Any]) -> str:
+    raw = _raw_payload(row)
+    hints: list[str] = []
+    for key in (
+        "liquidity",
+        "liquidityNum",
+        "volume",
+        "volumeNum",
+        "volume24hr",
+        "volume24hrNum",
+        "open_interest",
+        "open_interest_dollars",
+        "yes_bid",
+        "yes_ask",
+        "no_bid",
+        "no_ask",
+        "last_price",
+        "lastPrice",
+    ):
+        value = raw.get(key)
+        if value not in (None, "", [], {}):
+            hints.append(f"{key}={value}")
+    return "; ".join(hints[:8])
+
+
+def approval_notes_for_market_type(market_type: str) -> str:
+    if market_type == "host_country":
+        return "Check exact host country/group, year, source agencies, and multi-host resolution."
+    if market_type == "match_winner":
+        return "Check draw, regulation time, extra time, penalties, postponement/cancel rules."
+    if market_type == "advancement":
+        return "Check tournament stage, advancement vs match result, and settlement timing."
+    if market_type in {"player_award", "team_stat", "transfer"}:
+        return "Review full proposition, source, deadline, and whether a Kalshi equivalent really exists."
+    if market_type in {"spread", "total", "both_teams_score", "halftime"}:
+        return "Do not map to simple winner markets; check threshold, period, void/cancel rules."
+    return "Review full rules before approving."
+
+
+def candidate_match_score(left: pd.Series | dict[str, Any], right: pd.Series | dict[str, Any]) -> float:
+    subject_score = fuzz.token_set_ratio(str(_row_get(left, "subject") or ""), str(_row_get(right, "subject") or ""))
+    title_score = fuzz.token_set_ratio(str(_row_get(left, "title") or ""), str(_row_get(right, "title") or ""))
+    year_score = 100.0 if _row_get(left, "event_year") and _row_get(left, "event_year") == _row_get(right, "event_year") else 0.0
+    type_score = 100.0 if _row_get(left, "market_type") == _row_get(right, "market_type") else 0.0
+    return float(0.45 * subject_score + 0.25 * title_score + 0.20 * year_score + 0.10 * type_score)
+
+
 def load_manual_mappings(path: str | Path = DEFAULT_MAPPING_PATH) -> pd.DataFrame:
     mapping_path = Path(path)
     if not mapping_path.exists():
@@ -525,6 +720,8 @@ def run_fifa_snapshot(
         raw_polymarket_markets = fetch_polymarket_fifa_markets(client, max_markets=market_limit, page_size=page_size)
         raw_kalshi_markets = fetch_kalshi_fifa_markets(client, max_markets=market_limit, page_size=min(page_size, 200))
         candidates = normalize_fifa_candidates(raw_polymarket_markets, raw_kalshi_markets, run_id=run_id, retrieved_at=started_at)
+    approval_candidates = build_approval_candidates(candidates)
+    suggested_mappings = suggest_manual_mappings(approval_candidates)
 
     mappings = load_manual_mappings(mapping_path)
     mapping_snapshot = validate_manual_mappings(mappings)
@@ -565,6 +762,8 @@ def run_fifa_snapshot(
         },
         "tables": {
             "venue_market_candidates": candidates,
+            "approval_candidates": approval_candidates,
+            "suggested_mappings": suggested_mappings,
             "manual_mappings_snapshot": mapping_snapshot,
             "orderbook_snapshots": orderbooks,
             "arbitrage_alerts": alerts,
@@ -690,8 +889,10 @@ def write_fifa_snapshot_artifacts(result: dict[str, Any], output_dir: str | Path
     )
 
     processed_paths: dict[str, dict[str, Path]] = {}
+    latest_processed_paths: dict[str, dict[str, Path]] = {}
     for name, frame in result["tables"].items():
         processed_paths[name] = append_processed_table(name, frame, output_root)
+        latest_processed_paths[name] = write_latest_processed_table(name, frame, output_root)
 
     alert_rows = result["tables"]["arbitrage_alerts"]
     jsonl_path = alerts_dir / "arbitrage_alerts.jsonl"
@@ -700,7 +901,12 @@ def write_fifa_snapshot_artifacts(result: dict[str, Any], output_dir: str | Path
         with jsonl_path.open("a", encoding="utf-8") as handle:
             for record in actual_alerts.to_dict(orient="records"):
                 handle.write(json.dumps(record, sort_keys=True, default=str) + "\n")
-    return {"raw_paths": raw_paths, "processed_paths": processed_paths, "alert_jsonl": jsonl_path}
+    return {
+        "raw_paths": raw_paths,
+        "processed_paths": processed_paths,
+        "latest_processed_paths": latest_processed_paths,
+        "alert_jsonl": jsonl_path,
+    }
 
 
 def append_processed_table(name: str, frame: pd.DataFrame, output_dir: str | Path = DEFAULT_OUTPUT_DIR) -> dict[str, Path]:
@@ -717,6 +923,16 @@ def append_processed_table(name: str, frame: pd.DataFrame, output_dir: str | Pat
             pass
     output.to_parquet(parquet_path, index=False)
     output.to_csv(csv_path, index=False)
+    return {"parquet": parquet_path, "csv": csv_path}
+
+
+def write_latest_processed_table(name: str, frame: pd.DataFrame, output_dir: str | Path = DEFAULT_OUTPUT_DIR) -> dict[str, Path]:
+    latest_dir = Path(output_dir) / "processed" / "latest"
+    latest_dir.mkdir(parents=True, exist_ok=True)
+    parquet_path = latest_dir / f"{name}.parquet"
+    csv_path = latest_dir / f"{name}.csv"
+    frame.to_parquet(parquet_path, index=False)
+    frame.to_csv(csv_path, index=False)
     return {"parquet": parquet_path, "csv": csv_path}
 
 
@@ -942,6 +1158,64 @@ def _score_direction(
     }
 
 
+def _suggested_mapping_row(pm: pd.Series, ks: pd.Series, score: float) -> dict[str, Any]:
+    market_type = str(pm.get("market_type") or "")
+    return {
+        "run_id": pm.get("run_id", ""),
+        "suggested_mapping_id": f"{_slugify(str(pm.get('ticker_or_slug') or pm.get('market_id')))}__{_slugify(str(ks.get('ticker_or_slug')))}",
+        "match_score": round(score, 2),
+        "suggestion_status": "review_required",
+        "market_type": market_type,
+        "review_notes": _suggestion_review_notes(pm, ks),
+        "polymarket_market_id": pm.get("market_id", ""),
+        "polymarket_slug": pm.get("ticker_or_slug", ""),
+        "polymarket_title": pm.get("title", ""),
+        "polymarket_yes_token_id": pm.get("yes_token_id", ""),
+        "polymarket_no_token_id": pm.get("no_token_id", ""),
+        "polymarket_outcomes": pm.get("outcomes", ""),
+        "polymarket_settlement_summary": pm.get("settlement_summary", ""),
+        "kalshi_ticker": ks.get("market_id", ""),
+        "kalshi_title": ks.get("title", ""),
+        "kalshi_outcomes": ks.get("outcomes", ""),
+        "kalshi_settlement_summary": ks.get("settlement_summary", ""),
+        "draw_handling": _default_draw_handling(market_type),
+        "extra_time_handling": _default_extra_time_handling(market_type),
+        "penalties_handling": _default_penalties_handling(market_type),
+        "settlement_notes": "REVIEW REQUIRED: confirm both markets resolve identically before copying to config/fifa_market_mappings.csv.",
+    }
+
+
+def _suggestion_review_notes(pm: pd.Series, ks: pd.Series) -> str:
+    notes = []
+    if pm.get("event_year") != ks.get("event_year"):
+        notes.append(f"year mismatch: polymarket={pm.get('event_year') or 'unknown'} kalshi={ks.get('event_year') or 'unknown'}")
+    if pm.get("market_type") != ks.get("market_type"):
+        notes.append(f"type mismatch: polymarket={pm.get('market_type')} kalshi={ks.get('market_type')}")
+    if pm.get("market_type") == "host_country":
+        notes.append("verify host country/group and multi-host handling")
+    if pm.get("market_type") == "match_winner":
+        notes.append("verify draw, extra time, penalties, and postponement rules")
+    return "; ".join(notes) or "review settlement summaries before approval"
+
+
+def _default_draw_handling(market_type: str) -> str:
+    if market_type == "host_country":
+        return "not applicable"
+    return "REVIEW REQUIRED"
+
+
+def _default_extra_time_handling(market_type: str) -> str:
+    if market_type == "host_country":
+        return "not applicable"
+    return "REVIEW REQUIRED"
+
+
+def _default_penalties_handling(market_type: str) -> str:
+    if market_type == "host_country":
+        return "not applicable"
+    return "REVIEW REQUIRED"
+
+
 def _single_orderbook(orderbooks: pd.DataFrame, mapping_id: str, venue: str) -> dict[str, Any]:
     if orderbooks.empty:
         return {}
@@ -986,6 +1260,44 @@ def _search_text(value: Any) -> str:
     if isinstance(value, str):
         return value.lower()
     return json.dumps(value, sort_keys=True, default=str).lower()
+
+
+def _candidate_text(row: pd.Series | dict[str, Any]) -> str:
+    return _search_text(
+        {
+            "title": _row_get(row, "title"),
+            "subtitle": _row_get(row, "subtitle"),
+            "ticker_or_slug": _row_get(row, "ticker_or_slug"),
+            "outcomes": _row_get(row, "outcomes"),
+            "rules_text": _row_get(row, "rules_text"),
+        }
+    )
+
+
+def _row_get(row: pd.Series | dict[str, Any], key: str) -> Any:
+    if isinstance(row, pd.Series):
+        return row.get(key)
+    return row.get(key)
+
+
+def _raw_payload(row: pd.Series | dict[str, Any]) -> dict[str, Any]:
+    value = _row_get(row, "raw_payload")
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            payload = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+    return {}
+
+
+def _slugify(value: str) -> str:
+    text = value.lower()
+    chars = [char if char.isalnum() else "-" for char in text]
+    compact = "-".join(part for part in "".join(chars).split("-") if part)
+    return compact[:80] or "candidate"
 
 
 def _polymarket_search_payload(market: dict[str, Any]) -> dict[str, Any]:
