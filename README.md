@@ -1,4 +1,63 @@
-# Prediction Market Data Profile
+# Poly x Kalshi
+
+Research-only cross-market scanner for FIFA / World Cup prediction-market price gaps between Polymarket and Kalshi.
+
+The current MVP discovers FIFA-related market candidates, uses manually approved cross-venue mappings, polls live YES/NO orderbooks, flags conservative complementary-buy arbitrage, and logs snapshots locally for backtesting. It does not place trades, manage private keys, auto-approve mappings, run WebSockets, or require cloud infrastructure.
+
+## Cross-Market FIFA Scanner
+
+Open the notebook:
+
+```bash
+cd /Users/qisongqiao/Warehouse/cv/project_simulation/prediction_market
+source .venv/bin/activate
+jupyter notebook notebooks/05_cross_market_fifa_arbitrage_scanner.ipynb
+```
+
+Manual mapping is the alert gate. Fill [config/fifa_market_mappings.csv](/Users/qisongqiao/Warehouse/cv/project_simulation/prediction_market/config/fifa_market_mappings.csv) with approved pairs only after checking draw handling, extra time, penalties, and settlement notes.
+
+Run one snapshot:
+
+```bash
+poly-x-kalshi-fifa-snapshot
+```
+
+Run the local scheduler loop:
+
+```bash
+poly-x-kalshi-fifa-watch --interval-seconds 60
+```
+
+For a short smoke run:
+
+```bash
+poly-x-kalshi-fifa-watch --max-ticks 2 --interval-seconds 5
+```
+
+The scanner writes:
+
+```text
+data/fifa_arbitrage/
+├── raw/
+│   ├── polymarket/
+│   └── kalshi/
+├── processed/
+│   ├── venue_market_candidates.parquet
+│   ├── manual_mappings_snapshot.parquet
+│   ├── orderbook_snapshots.parquet
+│   ├── arbitrage_alerts.parquet
+│   └── scanner_runs.parquet
+└── alerts/
+    └── arbitrage_alerts.jsonl
+```
+
+Optional live smoke tests:
+
+```bash
+RUN_LIVE_FIFA_ARBITRAGE_TESTS=1 python -m pytest tests/test_fifa_arbitrage_live.py
+```
+
+## Legacy Data Profile
 
 Notebook-first local prototype for comparing small Polymarket and Kalshi prediction-market data snapshots.
 

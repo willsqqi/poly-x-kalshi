@@ -19,6 +19,9 @@ data/onchain_sample/*
 data/aws_lake/*
 data/arbitrage/raw/*
 data/arbitrage/processed/*
+data/fifa_arbitrage/raw/*
+data/fifa_arbitrage/processed/*
+data/fifa_arbitrage/alerts/*
 logs/*
 
 !data/raw/.gitkeep
@@ -45,4 +48,18 @@ data/arbitrage/raw/polymarket/*
 !data/arbitrage/processed/
 data/arbitrage/processed/*
 !data/arbitrage/processed/.gitkeep
+!data/fifa_arbitrage/
+!data/fifa_arbitrage/raw/
+!data/fifa_arbitrage/raw/polymarket/
+data/fifa_arbitrage/raw/polymarket/*
+!data/fifa_arbitrage/raw/polymarket/.gitkeep
+!data/fifa_arbitrage/raw/kalshi/
+data/fifa_arbitrage/raw/kalshi/*
+!data/fifa_arbitrage/raw/kalshi/.gitkeep
+!data/fifa_arbitrage/processed/
+data/fifa_arbitrage/processed/*
+!data/fifa_arbitrage/processed/.gitkeep
+!data/fifa_arbitrage/alerts/
+data/fifa_arbitrage/alerts/*
+!data/fifa_arbitrage/alerts/.gitkeep
 !logs/.gitkeep

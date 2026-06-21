@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "prediction-market-data-profile"
+name = "poly-x-kalshi"
 version = "0.1.0"
-description = "Notebook-first local profile of Polymarket and Kalshi prediction market data."
+description = "Research-only cross-market FIFA prediction arbitrage scanner for Polymarket and Kalshi."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -34,6 +34,8 @@ where = ["src"]
 prediction-market-etl = "prediction_market.aws_etl.cli:main"
 prediction-market-backfill = "prediction_market.aws_etl.batch_driver:main"
 prediction-market-athena-validation = "prediction_market.aws_etl.athena_validation:main"
+poly-x-kalshi-fifa-snapshot = "prediction_market.fifa_arbitrage:snapshot_cli_main"
+poly-x-kalshi-fifa-watch = "prediction_market.fifa_arbitrage:watch_cli_main"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
