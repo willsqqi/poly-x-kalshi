@@ -16,7 +16,7 @@ import pandas as pd
 from .collectors import KALSHI_BASE, POLYMARKET_CLOB_BASE, POLYMARKET_GAMMA_BASE
 from .utils import best_ask, best_bid, compact_json, parse_json_array, parse_timestamp, to_float, total_size, utc_now_iso
 
-FIFA_KEYWORDS = ("fifa", "world cup", "world soccer cup")
+FIFA_KEYWORDS = ("world cup", "world soccer cup", "world soccer", "worldcup", "fifa")
 DEFAULT_MAPPING_PATH = "config/fifa_market_mappings.csv"
 DEFAULT_OUTPUT_DIR = "data/fifa_arbitrage"
 DEFAULT_INTERVAL_SECONDS = 60.0
@@ -233,7 +233,59 @@ def fetch_kalshi_fifa_markets(
             break
         if sleep_seconds:
             time.sleep(sleep_seconds)
+
+    for event in fetch_kalshi_fifa_events(client, max_events=max_markets, page_size=min(page_size, 200), sleep_seconds=sleep_seconds):
+        event_ticker = str(event.get("event_ticker") or "")
+        if not event_ticker:
+            continue
+        payload = request_json_with_retry(client, f"{KALSHI_BASE}/markets", params={"status": "open", "event_ticker": event_ticker, "limit": page_size})
+        for market in _markets_from_payload(payload):
+            ticker = str(market.get("ticker") or "")
+            if not ticker or ticker in seen_tickers:
+                continue
+            market["_event_context_title"] = event.get("title", "")
+            market["_event_context_ticker"] = event_ticker
+            market["_event_context_payload"] = event
+            markets.append(market)
+            seen_tickers.add(ticker)
     return markets
+
+
+def fetch_kalshi_fifa_events(
+    client: httpx.Client,
+    max_events: int = 1_000,
+    page_size: int = 200,
+    sleep_seconds: float = 0.0,
+) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    seen_event_tickers: set[str] = set()
+    inspected = 0
+    cursor = ""
+    while inspected < max_events:
+        limit = min(page_size, max_events - inspected)
+        params: dict[str, Any] = {"status": "open", "limit": limit}
+        if cursor:
+            params["cursor"] = cursor
+        payload = request_json_with_retry(client, f"{KALSHI_BASE}/events", params=params)
+        batch = payload.get("events", []) if isinstance(payload, dict) else []
+        if not batch:
+            break
+        inspected += len(batch)
+        for event in batch:
+            if not isinstance(event, dict):
+                continue
+            event_ticker = str(event.get("event_ticker") or "")
+            if not event_ticker or event_ticker in seen_event_tickers:
+                continue
+            if is_fifa_market(_kalshi_event_search_payload(event)):
+                events.append(event)
+                seen_event_tickers.add(event_ticker)
+        cursor = str(payload.get("cursor") or "") if isinstance(payload, dict) else ""
+        if not cursor or len(batch) < limit:
+            break
+        if sleep_seconds:
+            time.sleep(sleep_seconds)
+    return events
 
 
 def normalize_fifa_candidates(
@@ -953,6 +1005,8 @@ def _kalshi_search_payload(market: dict[str, Any]) -> dict[str, Any]:
         "ticker": market.get("ticker"),
         "event_ticker": market.get("event_ticker"),
         "series_ticker": market.get("series_ticker"),
+        "event_context_title": market.get("_event_context_title"),
+        "event_context_ticker": market.get("_event_context_ticker"),
         "title": market.get("title"),
         "subtitle": market.get("subtitle"),
         "yes_sub_title": market.get("yes_sub_title"),
@@ -960,6 +1014,16 @@ def _kalshi_search_payload(market: dict[str, Any]) -> dict[str, Any]:
         "category": market.get("category"),
         "rules_primary": market.get("rules_primary"),
         "rules_secondary": market.get("rules_secondary"),
+    }
+
+
+def _kalshi_event_search_payload(event: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "event_ticker": event.get("event_ticker"),
+        "series_ticker": event.get("series_ticker"),
+        "title": event.get("title"),
+        "category": event.get("category"),
+        "sub_title": event.get("sub_title"),
     }
 
 

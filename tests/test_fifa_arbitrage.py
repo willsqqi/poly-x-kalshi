@@ -36,6 +36,52 @@ def test_fifa_market_discovery_filters_both_venues() -> None:
     assert "world cup" in frame.loc[frame["venue"] == "kalshi", "keyword_hits"].iloc[0]
 
 
+def test_kalshi_event_discovery_expands_world_soccer_cup_markets() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/trade-api/v2/markets" and request.url.params.get("event_ticker") == "KXWCHOST-2038":
+            return httpx.Response(
+                200,
+                json={
+                    "markets": [
+                        {
+                            "ticker": "KXWCHOST-2038-USA",
+                            "event_ticker": "KXWCHOST-2038",
+                            "series_ticker": "KXWCHOST",
+                            "title": "United States",
+                            "status": "active",
+                            "yes_sub_title": "United States",
+                            "no_sub_title": "United States",
+                        }
+                    ],
+                    "cursor": "",
+                },
+            )
+        if request.url.path == "/trade-api/v2/markets":
+            return httpx.Response(200, json={"markets": [], "cursor": ""})
+        if request.url.path == "/trade-api/v2/events":
+            return httpx.Response(
+                200,
+                json={
+                    "events": [
+                        {
+                            "event_ticker": "KXWCHOST-2038",
+                            "series_ticker": "KXWCHOST",
+                            "title": "Who will host the 2038 World Soccer Cup?",
+                            "category": "Sports",
+                        }
+                    ],
+                    "cursor": "",
+                },
+            )
+        raise AssertionError(f"Unexpected request: {request.url}")
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        markets = fetch_kalshi_fifa_markets(client, max_markets=10, page_size=10)
+
+    assert [market["ticker"] for market in markets] == ["KXWCHOST-2038-USA"]
+    assert markets[0]["_event_context_title"] == "Who will host the 2038 World Soccer Cup?"
+
+
 def test_manual_mapping_validation_requires_approval_and_settlement_notes() -> None:
     mappings = pd.DataFrame(
         [
@@ -237,8 +283,10 @@ def _mapping_row(mapping_id: str = "map-1", status: str = "approved", draw_handl
 def _discovery_handler(request: httpx.Request) -> httpx.Response:
     if request.url.host == "gamma-api.polymarket.com":
         return httpx.Response(200, json=[_polymarket_hit(), _polymarket_miss()])
-    if request.url.host == "external-api.kalshi.com":
+    if request.url.host == "external-api.kalshi.com" and request.url.path == "/trade-api/v2/markets":
         return httpx.Response(200, json={"markets": [_kalshi_hit(), _kalshi_miss()], "cursor": ""})
+    if request.url.host == "external-api.kalshi.com" and request.url.path == "/trade-api/v2/events":
+        return httpx.Response(200, json={"events": [], "cursor": ""})
     raise AssertionError(f"Unexpected request: {request.url}")
 
 
