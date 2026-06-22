@@ -29,3 +29,21 @@ resource "google_service_account_iam_member" "scheduler_can_run_as_scanner" {
   role               = "roles/iam.serviceAccountUser"
   member             = "serviceAccount:${google_service_account.scheduler.email}"
 }
+
+resource "google_project_iam_member" "cloud_build_storage_object_viewer" {
+  project = var.project_id
+  role    = "roles/storage.objectViewer"
+  member  = "serviceAccount:${local.cloud_build_service_account}"
+}
+
+resource "google_project_iam_member" "cloud_build_log_writer" {
+  project = var.project_id
+  role    = "roles/logging.logWriter"
+  member  = "serviceAccount:${local.cloud_build_service_account}"
+}
+
+resource "google_project_iam_member" "cloud_build_artifact_registry_writer" {
+  project = var.project_id
+  role    = "roles/artifactregistry.writer"
+  member  = "serviceAccount:${local.cloud_build_service_account}"
+}

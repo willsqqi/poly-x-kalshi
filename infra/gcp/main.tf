@@ -14,6 +14,10 @@ provider "google" {
   region  = var.region
 }
 
+data "google_project" "current" {
+  project_id = var.project_id
+}
+
 locals {
   labels = {
     app         = "poly-x-kalshi"
@@ -21,5 +25,6 @@ locals {
     environment = var.environment
   }
 
-  scanner_image = var.scanner_image != "" ? var.scanner_image : "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.scanner.repository_id}/fifa-scanner:latest"
+  scanner_image               = var.scanner_image != "" ? var.scanner_image : "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.scanner.repository_id}/fifa-scanner:latest"
+  cloud_build_service_account = "${data.google_project.current.number}-compute@developer.gserviceaccount.com"
 }
