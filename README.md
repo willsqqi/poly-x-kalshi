@@ -2,7 +2,7 @@
 
 Research-only cross-market scanner for FIFA / World Cup prediction-market price gaps between Polymarket and Kalshi.
 
-The current focus is the local bot workflow:
+The current focus is the FIFA / World Cup scanner workflow:
 
 ```text
 discover equivalent football markets
@@ -12,7 +12,7 @@ discover equivalent football markets
 -> log conservative cross-market alerts
 ```
 
-No automatic trading, private keys, WebSockets, or cloud scheduler are used in the current MVP.
+No automatic trading, private keys, or WebSockets are used in the current MVP. Local runs use a watch loop; the GCP path uses cost-conscious scheduled one-shot snapshots.
 
 ## Quick Start
 
@@ -39,6 +39,74 @@ Short smoke loop:
 ```bash
 poly-x-kalshi-fifa-watch --no-discovery --max-ticks 2 --interval-seconds 5
 ```
+
+## Cost-Conscious GCP Run
+
+The GCP deployment is designed to avoid an always-on worker. Cloud Scheduler triggers a Cloud Run Job once per schedule tick, the job runs one `poly-x-kalshi-fifa-snapshot`, writes durable files to GCS, and exits.
+
+Default resources are intentionally small:
+
+```text
+Cloud Run Job: 1 vCPU, 512Mi, max 300 seconds
+Cloud Scheduler: paused by default
+GCS raw retention: 14 days
+Output path: gs://<bucket>/fifa_arbitrage/
+```
+
+Create a Terraform variables file:
+
+```bash
+cd infra/gcp
+cp terraform.tfvars.example terraform.tfvars
+# edit project_id, region, and scheduler_paused
+```
+
+Bootstrap required APIs and Artifact Registry first:
+
+```bash
+terraform init
+terraform apply \
+  -target=google_project_service.required \
+  -target=google_artifact_registry_repository.scanner
+```
+
+Build and push the scanner image after Artifact Registry exists:
+
+```bash
+cd /Users/qisongqiao/Warehouse/cv/project_simulation/prediction_market
+IMAGE="$(terraform -chdir=infra/gcp output -raw artifact_registry_repository)/fifa-scanner:latest"
+REGION="$(echo "$IMAGE" | cut -d- -f1-2)"
+
+gcloud auth configure-docker "${REGION}-docker.pkg.dev"
+docker buildx build --platform linux/amd64 \
+  -f docker/Dockerfile.gcp-scanner \
+  -t "$IMAGE" \
+  --push .
+```
+
+Deploy the runtime resources:
+
+```bash
+terraform -chdir=infra/gcp plan
+terraform -chdir=infra/gcp apply
+```
+
+Run one manual cloud snapshot:
+
+```bash
+terraform -chdir=infra/gcp output -raw manual_run_command
+gcloud run jobs execute "$(terraform -chdir=infra/gcp output -raw cloud_run_job_name)" \
+  --region us-central1 \
+  --wait
+```
+
+Inspect GCS outputs:
+
+```bash
+gsutil ls -r "$(terraform -chdir=infra/gcp output -raw gcs_output_uri)"
+```
+
+When ready to collect continuously, set `scheduler_paused = false` and apply again. For a cheaper burn-in, use `schedule = "*/5 * * * *"`.
 
 ## Approval Workflow
 
@@ -93,6 +161,7 @@ data/fifa_arbitrage/
 │   ├── suggested_mappings.*
 │   ├── orderbook_snapshots.*
 │   ├── arbitrage_alerts.*
+│   ├── strategy_signals.*
 │   └── scanner_runs.*
 └── alerts/
     └── arbitrage_alerts.jsonl

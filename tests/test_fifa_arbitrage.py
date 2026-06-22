@@ -24,6 +24,10 @@ from prediction_market.fifa_arbitrage import (
     suggest_manual_mappings,
     validate_manual_mappings,
     watch_fifa_arbitrage,
+    _gcs_blob_name,
+    _gcs_uri,
+    _is_gcs_uri,
+    _split_gcs_uri,
 )
 
 
@@ -383,6 +387,19 @@ def test_snapshot_and_watch_loop_with_mocked_orderbooks(tmp_path: Path) -> None:
     assert orderbook_only_runs.iloc[0]["candidate_count"] == 0
     assert orderbook_only_runs.iloc[0]["approved_mapping_count"] == 1
     assert orderbook_only_runs.iloc[0]["orderbook_count"] == 2
+
+
+def test_gcs_output_uri_helpers() -> None:
+    assert _is_gcs_uri("gs://poly-x-kalshi-dev/fifa_arbitrage")
+    assert not _is_gcs_uri("data/fifa_arbitrage")
+    assert _split_gcs_uri("gs://poly-x-kalshi-dev/fifa_arbitrage") == ("poly-x-kalshi-dev", "fifa_arbitrage")
+    assert _split_gcs_uri("gs://poly-x-kalshi-dev") == ("poly-x-kalshi-dev", "")
+    assert _gcs_blob_name("fifa_arbitrage", "processed/latest/strategy_signals.csv") == (
+        "fifa_arbitrage/processed/latest/strategy_signals.csv"
+    )
+    assert _gcs_uri("poly-x-kalshi-dev", "fifa_arbitrage", "processed/latest/strategy_signals.csv") == (
+        "gs://poly-x-kalshi-dev/fifa_arbitrage/processed/latest/strategy_signals.csv"
+    )
 
 
 def _mapping_row(mapping_id: str = "map-1", status: str = "approved", draw_handling: str = "draw means NO") -> dict[str, str]:

@@ -13,8 +13,12 @@ dist/
 .env.*
 *.egg-info/
 infra/.terraform/
+infra/gcp/.terraform/
 infra/terraform.tfstate*
+infra/gcp/terraform.tfstate*
 infra/tfplan*
+infra/gcp/tfplan*
+infra/gcp/terraform.tfvars
 
 # Local reference checkout used for comparison; keep it outside this repo history.
 Polymarket_data/

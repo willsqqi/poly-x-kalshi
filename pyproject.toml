@@ -26,6 +26,9 @@ dev = [
   "notebook>=7.0",
   "pytest>=8.0",
 ]
+gcp = [
+  "google-cloud-storage>=2.16",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

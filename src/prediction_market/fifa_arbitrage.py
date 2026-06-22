@@ -6,6 +6,7 @@ import os
 import re
 import sys
 import time
+from io import BytesIO
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1160,6 +1161,9 @@ def request_json_with_retry(
 
 
 def write_fifa_snapshot_artifacts(result: dict[str, Any], output_dir: str | Path = DEFAULT_OUTPUT_DIR) -> dict[str, Any]:
+    if _is_gcs_uri(output_dir):
+        return write_fifa_snapshot_artifacts_gcs(result, output_dir)
+
     output_root = Path(output_dir)
     raw_polymarket = output_root / "raw" / "polymarket"
     raw_kalshi = output_root / "raw" / "kalshi"
@@ -1209,6 +1213,61 @@ def write_fifa_snapshot_artifacts(result: dict[str, Any], output_dir: str | Path
     }
 
 
+def write_fifa_snapshot_artifacts_gcs(result: dict[str, Any], output_dir: str | Path = DEFAULT_OUTPUT_DIR) -> dict[str, Any]:
+    bucket_name, prefix = _split_gcs_uri(str(output_dir))
+    storage = _google_storage_client()
+    bucket = storage.bucket(bucket_name)
+    run_id = result["run_id"]
+
+    raw_paths = {
+        "polymarket_markets": _gcs_uri(bucket_name, prefix, f"raw/polymarket/markets_{run_id}.json"),
+        "kalshi_markets": _gcs_uri(bucket_name, prefix, f"raw/kalshi/markets_{run_id}.json"),
+    }
+    _upload_gcs_text(
+        bucket,
+        _gcs_blob_name(prefix, f"raw/polymarket/markets_{run_id}.json"),
+        json.dumps(result["raw"].get("polymarket_markets", []), indent=2, sort_keys=True, default=str),
+        content_type="application/json",
+    )
+    _upload_gcs_text(
+        bucket,
+        _gcs_blob_name(prefix, f"raw/kalshi/markets_{run_id}.json"),
+        json.dumps(result["raw"].get("kalshi_markets", []), indent=2, sort_keys=True, default=str),
+        content_type="application/json",
+    )
+
+    processed_paths: dict[str, dict[str, str]] = {}
+    latest_processed_paths: dict[str, dict[str, str]] = {}
+    for name, frame in result["tables"].items():
+        run_prefix = f"processed/{name}/run_id={run_id}"
+        processed_paths[name] = _write_gcs_table(bucket, bucket_name, prefix, run_prefix, name, frame)
+        if name in DISCOVERY_REVIEW_TABLES and frame.empty:
+            latest_processed_paths[name] = {
+                "parquet": _gcs_uri(bucket_name, prefix, f"processed/latest/{name}.parquet"),
+                "csv": _gcs_uri(bucket_name, prefix, f"processed/latest/{name}.csv"),
+            }
+            continue
+        latest_processed_paths[name] = _write_gcs_table(bucket, bucket_name, prefix, "processed/latest", name, frame)
+
+    alert_rows = result["tables"]["arbitrage_alerts"]
+    actual_alerts = alert_rows[alert_rows["is_alert"] == True] if not alert_rows.empty else alert_rows  # noqa: E712
+    alert_jsonl = _gcs_uri(bucket_name, prefix, f"alerts/run_id={run_id}/arbitrage_alerts.jsonl")
+    if not actual_alerts.empty:
+        body = "\n".join(json.dumps(record, sort_keys=True, default=str) for record in actual_alerts.to_dict(orient="records")) + "\n"
+        _upload_gcs_text(
+            bucket,
+            _gcs_blob_name(prefix, f"alerts/run_id={run_id}/arbitrage_alerts.jsonl"),
+            body,
+            content_type="application/jsonl",
+        )
+    return {
+        "raw_paths": raw_paths,
+        "processed_paths": processed_paths,
+        "latest_processed_paths": latest_processed_paths,
+        "alert_jsonl": alert_jsonl,
+    }
+
+
 def append_processed_table(name: str, frame: pd.DataFrame, output_dir: str | Path = DEFAULT_OUTPUT_DIR) -> dict[str, Path]:
     processed_dir = Path(output_dir) / "processed"
     processed_dir.mkdir(parents=True, exist_ok=True)
@@ -1224,6 +1283,79 @@ def append_processed_table(name: str, frame: pd.DataFrame, output_dir: str | Pat
     output.to_parquet(parquet_path, index=False)
     output.to_csv(csv_path, index=False)
     return {"parquet": parquet_path, "csv": csv_path}
+
+
+def _write_gcs_table(
+    bucket: Any,
+    bucket_name: str,
+    prefix: str,
+    table_prefix: str,
+    name: str,
+    frame: pd.DataFrame,
+) -> dict[str, str]:
+    parquet_path = f"{table_prefix}/{name}.parquet"
+    csv_path = f"{table_prefix}/{name}.csv"
+    _upload_gcs_bytes(
+        bucket,
+        _gcs_blob_name(prefix, parquet_path),
+        _dataframe_to_parquet_bytes(frame),
+        content_type="application/octet-stream",
+    )
+    _upload_gcs_text(
+        bucket,
+        _gcs_blob_name(prefix, csv_path),
+        frame.to_csv(index=False),
+        content_type="text/csv",
+    )
+    return {
+        "parquet": _gcs_uri(bucket_name, prefix, parquet_path),
+        "csv": _gcs_uri(bucket_name, prefix, csv_path),
+    }
+
+
+def _dataframe_to_parquet_bytes(frame: pd.DataFrame) -> bytes:
+    buffer = BytesIO()
+    frame.to_parquet(buffer, index=False)
+    return buffer.getvalue()
+
+
+def _is_gcs_uri(value: str | Path) -> bool:
+    return str(value).startswith("gs://")
+
+
+def _split_gcs_uri(uri: str) -> tuple[str, str]:
+    if not uri.startswith("gs://"):
+        raise ValueError(f"Expected gs:// URI, got {uri}")
+    remainder = uri[5:]
+    bucket, _, prefix = remainder.partition("/")
+    if not bucket:
+        raise ValueError(f"GCS URI is missing bucket name: {uri}")
+    return bucket, prefix.strip("/")
+
+
+def _gcs_blob_name(prefix: str, path: str) -> str:
+    clean_path = path.strip("/")
+    return f"{prefix.strip('/')}/{clean_path}" if prefix.strip("/") else clean_path
+
+
+def _gcs_uri(bucket_name: str, prefix: str, path: str) -> str:
+    return f"gs://{bucket_name}/{_gcs_blob_name(prefix, path)}"
+
+
+def _google_storage_client() -> Any:
+    try:
+        from google.cloud import storage
+    except ImportError as exc:  # pragma: no cover - covered by deployment image dependency
+        raise RuntimeError("GCS output requires installing the gcp extra: pip install '.[gcp]'") from exc
+    return storage.Client()
+
+
+def _upload_gcs_text(bucket: Any, blob_name: str, body: str, content_type: str) -> None:
+    bucket.blob(blob_name).upload_from_string(body, content_type=content_type)
+
+
+def _upload_gcs_bytes(bucket: Any, blob_name: str, body: bytes, content_type: str) -> None:
+    bucket.blob(blob_name).upload_from_string(body, content_type=content_type)
 
 
 def write_latest_processed_table(name: str, frame: pd.DataFrame, output_dir: str | Path = DEFAULT_OUTPUT_DIR) -> dict[str, Path]:

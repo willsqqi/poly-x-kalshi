@@ -1,0 +1,15 @@
+project_id       = "your-gcp-project-id"
+region           = "us-central1"
+environment      = "dev"
+name_prefix      = "poly-x-kalshi"
+
+# Cost-conscious default: create infra but keep collection paused until you are ready.
+scheduler_paused = true
+
+# One snapshot per minute. Use "*/5 * * * *" for a cheaper slower burn-in.
+schedule = "* * * * *"
+
+cpu    = "1"
+memory = "512Mi"
+
+raw_retention_days = 14
