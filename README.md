@@ -31,13 +31,13 @@ poly-x-kalshi-fifa-snapshot
 Run the local polling loop:
 
 ```bash
-poly-x-kalshi-fifa-watch --interval-seconds 60
+poly-x-kalshi-fifa-watch --no-discovery --interval-seconds 60
 ```
 
 Short smoke loop:
 
 ```bash
-poly-x-kalshi-fifa-watch --max-ticks 2 --interval-seconds 5
+poly-x-kalshi-fifa-watch --no-discovery --max-ticks 2 --interval-seconds 5
 ```
 
 ## Approval Workflow

@@ -979,6 +979,7 @@ def watch_fifa_arbitrage(
     slippage_buffer_per_leg: float = DEFAULT_SLIPPAGE_BUFFER_PER_LEG,
     fee_buffer_total: float = DEFAULT_FEE_BUFFER_TOTAL,
     min_depth_per_leg: float = DEFAULT_MIN_DEPTH_PER_LEG,
+    discover: bool = True,
     sleeper: Callable[[float], None] = time.sleep,
     client_factory: Callable[[], httpx.Client] | None = None,
 ) -> list[dict[str, Any]]:
@@ -1001,6 +1002,7 @@ def watch_fifa_arbitrage(
                     slippage_buffer_per_leg=slippage_buffer_per_leg,
                     fee_buffer_total=fee_buffer_total,
                     min_depth_per_leg=min_depth_per_leg,
+                    discover=discover,
                     client=client,
                 )
             summary = _snapshot_summary(result)
@@ -1142,6 +1144,7 @@ def build_watch_parser() -> argparse.ArgumentParser:
     _add_common_args(parser)
     parser.add_argument("--interval-seconds", type=float, default=DEFAULT_INTERVAL_SECONDS)
     parser.add_argument("--max-ticks", type=int)
+    parser.add_argument("--no-discovery", action="store_true", help="Skip market discovery and only score approved mappings")
     return parser
 
 
@@ -1180,6 +1183,7 @@ def watch_cli_main(argv: list[str] | None = None) -> int:
         slippage_buffer_per_leg=args.slippage_buffer_per_leg,
         fee_buffer_total=args.fee_buffer_total,
         min_depth_per_leg=args.min_depth_per_leg,
+        discover=not args.no_discovery,
     )
     print(json.dumps({"ticks": summaries}, indent=2, sort_keys=True, default=str))
     return 0

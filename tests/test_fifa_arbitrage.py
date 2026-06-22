@@ -346,6 +346,25 @@ def test_snapshot_and_watch_loop_with_mocked_orderbooks(tmp_path: Path) -> None:
     assert sleeps == [0.1]
     assert runs["alert_count"].tolist() == [1, 1]
 
+    def orderbook_only_factory() -> httpx.Client:
+        return httpx.Client(transport=httpx.MockTransport(_orderbook_handler))
+
+    orderbook_only_summaries = watch_fifa_arbitrage(
+        output_dir=tmp_path / "watch-no-discovery",
+        mapping_path=mapping_path,
+        interval_seconds=0.1,
+        max_ticks=1,
+        discover=False,
+        sleeper=sleeps.append,
+        client_factory=orderbook_only_factory,
+    )
+
+    orderbook_only_runs = pd.read_parquet(tmp_path / "watch-no-discovery" / "processed" / "scanner_runs.parquet")
+    assert len(orderbook_only_summaries) == 1
+    assert orderbook_only_runs.iloc[0]["candidate_count"] == 0
+    assert orderbook_only_runs.iloc[0]["approved_mapping_count"] == 1
+    assert orderbook_only_runs.iloc[0]["orderbook_count"] == 2
+
 
 def _mapping_row(mapping_id: str = "map-1", status: str = "approved", draw_handling: str = "draw means NO") -> dict[str, str]:
     return {
