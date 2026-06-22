@@ -70,10 +70,20 @@ terraform apply \
   -target=google_artifact_registry_repository.scanner
 ```
 
-Build and push the scanner image after Artifact Registry exists:
+Build and push the scanner image after Artifact Registry exists. Cloud Build avoids needing a local Docker daemon:
 
 ```bash
 cd /Users/qisongqiao/Warehouse/cv/project_simulation/prediction_market
+IMAGE="$(terraform -chdir=infra/gcp output -raw artifact_registry_repository)/fifa-scanner:latest"
+gcloud builds submit \
+  --project "$(terraform -chdir=infra/gcp output -raw artifact_registry_repository | cut -d/ -f2)" \
+  --tag "$IMAGE" \
+  --file docker/Dockerfile.gcp-scanner .
+```
+
+If Docker Desktop is running, this local build path also works:
+
+```bash
 IMAGE="$(terraform -chdir=infra/gcp output -raw artifact_registry_repository)/fifa-scanner:latest"
 REGION="$(echo "$IMAGE" | cut -d- -f1-2)"
 
