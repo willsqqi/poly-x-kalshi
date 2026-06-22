@@ -65,13 +65,13 @@ One-command deployment from a machine that can reach GCP control-plane APIs:
 
 ```bash
 cd /Users/qisongqiao/Warehouse/cv/project_simulation/prediction_market
-PROJECT_ID=dcn-sdn REGION=us-central1 ./scripts/deploy_gcp_scanner.sh
+PROJECT_ID=poly-x-kalshi REGION=us-central1 ./scripts/deploy_gcp_scanner.sh
 ```
 
 To also run one manual smoke snapshot after deployment:
 
 ```bash
-PROJECT_ID=dcn-sdn REGION=us-central1 RUN_MANUAL_SNAPSHOT=1 ./scripts/deploy_gcp_scanner.sh
+PROJECT_ID=poly-x-kalshi REGION=us-central1 RUN_MANUAL_SNAPSHOT=1 ./scripts/deploy_gcp_scanner.sh
 ```
 
 If local networking blocks `serviceusage.googleapis.com`, run the same commands from Google Cloud Shell.
@@ -93,7 +93,7 @@ Build and push the scanner image after Artifact Registry exists. Cloud Build avo
 cd /Users/qisongqiao/Warehouse/cv/project_simulation/prediction_market
 IMAGE="$(terraform -chdir=infra/gcp output -raw artifact_registry_repository)/fifa-scanner:latest"
 gcloud builds submit \
-  --project dcn-sdn \
+  --project poly-x-kalshi \
   --config cloudbuild.gcp-scanner.yaml \
   --substitutions "_IMAGE=$IMAGE" .
 ```
