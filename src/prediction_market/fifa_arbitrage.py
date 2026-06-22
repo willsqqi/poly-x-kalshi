@@ -182,6 +182,38 @@ ALERT_COLUMNS = [
     "settlement_notes",
 ]
 
+SIGNAL_COLUMNS = [
+    "run_id",
+    "detected_at",
+    "mapping_id",
+    "event_name",
+    "proposition",
+    "direction",
+    "signal",
+    "is_alert",
+    "price_available",
+    "liquidity_ok",
+    "threshold_ok",
+    "gross_cost",
+    "buffered_cost",
+    "net_edge",
+    "min_depth",
+    "min_net_edge",
+    "exclusion_reason",
+    "leg1_venue",
+    "leg1_outcome",
+    "leg1_ask",
+    "leg1_depth",
+    "leg2_venue",
+    "leg2_outcome",
+    "leg2_ask",
+    "leg2_depth",
+    "draw_handling",
+    "extra_time_handling",
+    "penalties_handling",
+    "settlement_notes",
+]
+
 RUN_COLUMNS = [
     "run_id",
     "started_at",
@@ -195,6 +227,7 @@ RUN_COLUMNS = [
 ]
 
 MAPPING_SNAPSHOT_COLUMNS = [*MAPPING_COLUMNS, "is_approved", "validation_errors"]
+DISCOVERY_REVIEW_TABLES = {"venue_market_candidates", "approval_candidates", "suggested_mappings"}
 
 
 def fifa_keyword_hits(value: Any) -> list[str]:
@@ -873,6 +906,69 @@ def score_cross_market_arbitrage(
     return frame.sort_values(["_rank", "net_edge"], ascending=[True, False], na_position="last").drop(columns=["_rank"]).reset_index(drop=True)
 
 
+def build_strategy_signals(alerts: pd.DataFrame) -> pd.DataFrame:
+    if alerts.empty:
+        return pd.DataFrame(columns=SIGNAL_COLUMNS)
+
+    rows: list[dict[str, Any]] = []
+    for _, row in alerts.iterrows():
+        leg1_ask = to_float(row.get("leg1_ask"))
+        leg2_ask = to_float(row.get("leg2_ask"))
+        min_depth = to_float(row.get("min_depth")) or 0.0
+        min_net_edge = to_float(row.get("min_net_edge")) or DEFAULT_MIN_NET_EDGE
+        net_edge = to_float(row.get("net_edge"))
+        exclusion_reason = str(row.get("exclusion_reason") or "")
+        price_available = leg1_ask is not None and leg2_ask is not None
+        liquidity_ok = price_available and exclusion_reason != "insufficient_depth"
+        threshold_ok = net_edge is not None and net_edge >= min_net_edge
+        is_alert = bool(row.get("is_alert"))
+        if is_alert:
+            signal = "alert"
+        elif not price_available:
+            signal = "blocked_missing_price"
+        elif not liquidity_ok:
+            signal = "blocked_insufficient_depth"
+        elif not threshold_ok:
+            signal = "watch_edge_below_threshold"
+        else:
+            signal = f"blocked_{exclusion_reason or 'unknown'}"
+
+        rows.append(
+            {
+                "run_id": row.get("run_id", ""),
+                "detected_at": row.get("detected_at", ""),
+                "mapping_id": row.get("mapping_id", ""),
+                "event_name": row.get("event_name", ""),
+                "proposition": row.get("proposition", ""),
+                "direction": row.get("direction", ""),
+                "signal": signal,
+                "is_alert": is_alert,
+                "price_available": price_available,
+                "liquidity_ok": liquidity_ok,
+                "threshold_ok": threshold_ok,
+                "gross_cost": row.get("gross_cost"),
+                "buffered_cost": row.get("buffered_cost"),
+                "net_edge": row.get("net_edge"),
+                "min_depth": row.get("min_depth"),
+                "min_net_edge": row.get("min_net_edge"),
+                "exclusion_reason": exclusion_reason,
+                "leg1_venue": row.get("leg1_venue", ""),
+                "leg1_outcome": row.get("leg1_outcome", ""),
+                "leg1_ask": row.get("leg1_ask"),
+                "leg1_depth": row.get("leg1_depth"),
+                "leg2_venue": row.get("leg2_venue", ""),
+                "leg2_outcome": row.get("leg2_outcome", ""),
+                "leg2_ask": row.get("leg2_ask"),
+                "leg2_depth": row.get("leg2_depth"),
+                "draw_handling": row.get("draw_handling", ""),
+                "extra_time_handling": row.get("extra_time_handling", ""),
+                "penalties_handling": row.get("penalties_handling", ""),
+                "settlement_notes": row.get("settlement_notes", ""),
+            }
+        )
+    return pd.DataFrame(rows, columns=SIGNAL_COLUMNS)
+
+
 def run_fifa_snapshot(
     output_dir: str | Path = DEFAULT_OUTPUT_DIR,
     mapping_path: str | Path = DEFAULT_MAPPING_PATH,
@@ -930,6 +1026,7 @@ def run_fifa_snapshot(
         min_depth_per_leg=min_depth_per_leg,
         detected_at=started_at,
     )
+    signals = build_strategy_signals(alerts)
     scanner_runs = pd.DataFrame(
         [
             {
@@ -960,6 +1057,7 @@ def run_fifa_snapshot(
             "manual_mappings_snapshot": mapping_snapshot,
             "orderbook_snapshots": orderbooks,
             "arbitrage_alerts": alerts,
+            "strategy_signals": signals,
             "scanner_runs": scanner_runs,
         },
     }
@@ -1087,6 +1185,13 @@ def write_fifa_snapshot_artifacts(result: dict[str, Any], output_dir: str | Path
     latest_processed_paths: dict[str, dict[str, Path]] = {}
     for name, frame in result["tables"].items():
         processed_paths[name] = append_processed_table(name, frame, output_root)
+        if name in DISCOVERY_REVIEW_TABLES and frame.empty:
+            latest_dir = output_root / "processed" / "latest"
+            latest_processed_paths[name] = {
+                "parquet": latest_dir / f"{name}.parquet",
+                "csv": latest_dir / f"{name}.csv",
+            }
+            continue
         latest_processed_paths[name] = write_latest_processed_table(name, frame, output_root)
 
     alert_rows = result["tables"]["arbitrage_alerts"]

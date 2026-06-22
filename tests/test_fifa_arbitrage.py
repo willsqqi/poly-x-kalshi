@@ -9,8 +9,10 @@ from prediction_market.fifa_arbitrage import (
     ALERT_COLUMNS,
     APPROVAL_CANDIDATE_COLUMNS,
     MAPPING_COLUMNS,
+    SIGNAL_COLUMNS,
     SUGGESTED_MAPPING_COLUMNS,
     approved_mappings,
+    build_strategy_signals,
     build_approval_candidates,
     fetch_kalshi_fifa_markets,
     fetch_mapped_orderbooks,
@@ -273,6 +275,17 @@ def test_arbitrage_scoring_flags_both_directions_and_exclusions() -> None:
     empty = score_cross_market_arbitrage(pd.DataFrame(columns=MAPPING_COLUMNS), orderbooks, run_id="run-1")
     assert list(empty.columns) == ALERT_COLUMNS
 
+    signals = build_strategy_signals(scored)
+    signals_by_direction = {row["direction"]: row for _, row in signals.iterrows()}
+    assert list(signals.columns) == SIGNAL_COLUMNS
+    assert signals_by_direction["buy_polymarket_yes_buy_kalshi_no"]["signal"] == "alert"
+    assert bool(signals_by_direction["buy_polymarket_yes_buy_kalshi_no"]["price_available"]) is True
+    assert bool(signals_by_direction["buy_polymarket_yes_buy_kalshi_no"]["threshold_ok"]) is True
+    assert signals_by_direction["buy_kalshi_yes_buy_polymarket_no"]["signal"] == "watch_edge_below_threshold"
+
+    empty_signals = build_strategy_signals(empty)
+    assert list(empty_signals.columns) == SIGNAL_COLUMNS
+
 
 def test_snapshot_cli_writes_valid_no_alert_run_with_empty_mappings(tmp_path: Path) -> None:
     mapping_path = tmp_path / "mappings.csv"
@@ -298,11 +311,13 @@ def test_snapshot_cli_writes_valid_no_alert_run_with_empty_mappings(tmp_path: Pa
     assert exit_code == 0
     runs = pd.read_parquet(tmp_path / "out" / "processed" / "scanner_runs.parquet")
     alerts = pd.read_parquet(tmp_path / "out" / "processed" / "arbitrage_alerts.parquet")
+    signals = pd.read_parquet(tmp_path / "out" / "processed" / "strategy_signals.parquet")
     candidates = pd.read_parquet(tmp_path / "out" / "processed" / "venue_market_candidates.parquet")
     latest_approval = pd.read_parquet(tmp_path / "out" / "processed" / "latest" / "approval_candidates.parquet")
     assert runs.iloc[0]["status"] == "succeeded"
     assert runs.iloc[0]["alert_count"] == 0
     assert alerts.empty
+    assert signals.empty
     assert len(candidates) == 2
     assert len(latest_approval) == 2
 
@@ -322,6 +337,8 @@ def test_snapshot_and_watch_loop_with_mocked_orderbooks(tmp_path: Path) -> None:
         )
 
     assert result["tables"]["scanner_runs"].iloc[0]["alert_count"] == 1
+    assert len(result["tables"]["strategy_signals"]) == 2
+    assert (tmp_path / "out" / "processed" / "strategy_signals.parquet").exists()
     assert (tmp_path / "out" / "alerts" / "arbitrage_alerts.jsonl").exists()
 
     sleeps: list[float] = []
@@ -341,8 +358,10 @@ def test_snapshot_and_watch_loop_with_mocked_orderbooks(tmp_path: Path) -> None:
     )
 
     runs = pd.read_parquet(tmp_path / "watch" / "processed" / "scanner_runs.parquet")
+    signals = pd.read_parquet(tmp_path / "watch" / "processed" / "strategy_signals.parquet")
     assert len(summaries) == 2
     assert len(runs) == 2
+    assert len(signals) == 4
     assert sleeps == [0.1]
     assert runs["alert_count"].tolist() == [1, 1]
 
