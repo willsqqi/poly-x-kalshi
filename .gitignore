@@ -33,6 +33,9 @@ data/arbitrage/processed/*
 data/fifa_arbitrage/raw/*
 data/fifa_arbitrage/processed/*
 data/fifa_arbitrage/alerts/*
+data/cross_sports_arbitrage/raw/*
+data/cross_sports_arbitrage/processed/*
+data/cross_sports_arbitrage/alerts/*
 logs/*
 
 !data/raw/.gitkeep
@@ -73,4 +76,18 @@ data/fifa_arbitrage/processed/*
 !data/fifa_arbitrage/alerts/
 data/fifa_arbitrage/alerts/*
 !data/fifa_arbitrage/alerts/.gitkeep
+!data/cross_sports_arbitrage/
+!data/cross_sports_arbitrage/raw/
+!data/cross_sports_arbitrage/raw/polymarket/
+data/cross_sports_arbitrage/raw/polymarket/*
+!data/cross_sports_arbitrage/raw/polymarket/.gitkeep
+!data/cross_sports_arbitrage/raw/kalshi/
+data/cross_sports_arbitrage/raw/kalshi/*
+!data/cross_sports_arbitrage/raw/kalshi/.gitkeep
+!data/cross_sports_arbitrage/processed/
+data/cross_sports_arbitrage/processed/*
+!data/cross_sports_arbitrage/processed/.gitkeep
+!data/cross_sports_arbitrage/alerts/
+data/cross_sports_arbitrage/alerts/*
+!data/cross_sports_arbitrage/alerts/.gitkeep
 !logs/.gitkeep

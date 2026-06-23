@@ -20,10 +20,67 @@ from .collectors import KALSHI_BASE, POLYMARKET_CLOB_BASE, POLYMARKET_GAMMA_BASE
 from .utils import best_ask, best_bid, compact_json, parse_json_array, parse_timestamp, to_float, total_size, utc_now_iso
 
 FIFA_KEYWORDS = ("world cup", "world soccer cup", "world soccer", "worldcup", "fifa")
+SPORTS_KEYWORDS = (
+    "world cup",
+    "world soccer cup",
+    "world soccer",
+    "worldcup",
+    "fifa",
+    "soccer",
+    "football",
+    "nfl",
+    "nba",
+    "wnba",
+    "mlb",
+    "nhl",
+    "hockey",
+    "basketball",
+    "baseball",
+    "tennis",
+    "ufc",
+    "mma",
+    "boxing",
+    "golf",
+    "nascar",
+    "formula 1",
+    "f1",
+    "premier league",
+    "champions league",
+    "europa league",
+    "laliga",
+    "serie a",
+    "bundesliga",
+    "college football",
+    "college basketball",
+    "march madness",
+)
 POLYMARKET_EVENT_TAG_SLUGS = ("soccer", "world-cup")
+SPORTS_POLYMARKET_EVENT_TAG_SLUGS = (
+    "sports",
+    "soccer",
+    "world-cup",
+    "football",
+    "nfl",
+    "nba",
+    "mlb",
+    "nhl",
+    "ufc",
+    "tennis",
+)
 KALSHI_FIFA_SERIES_TICKERS = ("KXWCGAME", "KXWCHOST")
+KALSHI_SPORTS_SERIES_TICKERS = (
+    "KXWCGAME",
+    "KXWCHOST",
+    "KXNBA",
+    "KXNFL",
+    "KXMLB",
+    "KXNHL",
+    "KXUFC",
+)
 DEFAULT_MAPPING_PATH = "config/fifa_market_mappings.csv"
+DEFAULT_SPORTS_MAPPING_PATH = "config/cross_sports_market_mappings.csv"
 DEFAULT_OUTPUT_DIR = "data/fifa_arbitrage"
+DEFAULT_SPORTS_OUTPUT_DIR = "data/cross_sports_arbitrage"
 DEFAULT_INTERVAL_SECONDS = 60.0
 DEFAULT_MIN_NET_EDGE = 0.02
 DEFAULT_SLIPPAGE_BUFFER_PER_LEG = 0.005
@@ -232,12 +289,37 @@ DISCOVERY_REVIEW_TABLES = {"venue_market_candidates", "approval_candidates", "su
 
 
 def fifa_keyword_hits(value: Any) -> list[str]:
+    return keyword_hits(value, FIFA_KEYWORDS)
+
+
+def sports_keyword_hits(value: Any) -> list[str]:
+    return keyword_hits(value, SPORTS_KEYWORDS)
+
+
+def keyword_hits(value: Any, keywords: tuple[str, ...] = FIFA_KEYWORDS) -> list[str]:
     text = _search_text(value)
-    return [keyword for keyword in FIFA_KEYWORDS if keyword in text]
+    hits: list[str] = []
+    for keyword in keywords:
+        if _keyword_matches(text, keyword):
+            hits.append(keyword)
+    return hits
+
+
+def _keyword_matches(text: str, keyword: str) -> bool:
+    clean_keyword = keyword.lower().strip()
+    if not clean_keyword:
+        return False
+    if re.fullmatch(r"[a-z0-9]{1,4}", clean_keyword):
+        return re.search(rf"(?<![a-z0-9]){re.escape(clean_keyword)}(?![a-z0-9])", text) is not None
+    return clean_keyword in text
 
 
 def is_fifa_market(value: Any) -> bool:
     return bool(fifa_keyword_hits(value))
+
+
+def is_sports_market(value: Any) -> bool:
+    return bool(sports_keyword_hits(value))
 
 
 def fetch_polymarket_fifa_markets(
@@ -245,6 +327,40 @@ def fetch_polymarket_fifa_markets(
     max_markets: int = 1_000,
     page_size: int = 500,
     sleep_seconds: float = 0.0,
+) -> list[dict[str, Any]]:
+    return fetch_polymarket_markets(
+        client,
+        max_markets=max_markets,
+        page_size=page_size,
+        sleep_seconds=sleep_seconds,
+        keywords=FIFA_KEYWORDS,
+        event_tag_slugs=POLYMARKET_EVENT_TAG_SLUGS,
+    )
+
+
+def fetch_polymarket_sports_markets(
+    client: httpx.Client,
+    max_markets: int = 1_000,
+    page_size: int = 500,
+    sleep_seconds: float = 0.0,
+) -> list[dict[str, Any]]:
+    return fetch_polymarket_markets(
+        client,
+        max_markets=max_markets,
+        page_size=page_size,
+        sleep_seconds=sleep_seconds,
+        keywords=SPORTS_KEYWORDS,
+        event_tag_slugs=SPORTS_POLYMARKET_EVENT_TAG_SLUGS,
+    )
+
+
+def fetch_polymarket_markets(
+    client: httpx.Client,
+    max_markets: int = 1_000,
+    page_size: int = 500,
+    sleep_seconds: float = 0.0,
+    keywords: tuple[str, ...] = FIFA_KEYWORDS,
+    event_tag_slugs: tuple[str, ...] = POLYMARKET_EVENT_TAG_SLUGS,
 ) -> list[dict[str, Any]]:
     markets: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
@@ -277,7 +393,7 @@ def fetch_polymarket_fifa_markets(
                 continue
             if market.get("active") is not True or market.get("closed") is True:
                 continue
-            if is_fifa_market(_polymarket_search_payload(market)):
+            if keyword_hits(_polymarket_search_payload(market), keywords):
                 markets.append(market)
                 seen_ids.add(market_id)
         if len(batch) < limit:
@@ -285,7 +401,14 @@ def fetch_polymarket_fifa_markets(
         if sleep_seconds:
             time.sleep(sleep_seconds)
 
-    for event in fetch_polymarket_fifa_events(client, max_events=max_markets, page_size=page_size, sleep_seconds=sleep_seconds):
+    for event in fetch_polymarket_events(
+        client,
+        max_events=max_markets,
+        page_size=page_size,
+        sleep_seconds=sleep_seconds,
+        keywords=keywords,
+        event_tag_slugs=event_tag_slugs,
+    ):
         event_context = _polymarket_event_context(event)
         for market in event.get("markets", []):
             if not isinstance(market, dict):
@@ -298,7 +421,7 @@ def fetch_polymarket_fifa_markets(
             if market.get("active") is not True or market.get("closed") is True:
                 continue
             enriched_market = {**market, **event_context}
-            if is_fifa_market(_polymarket_search_payload(enriched_market)):
+            if keyword_hits(_polymarket_search_payload(enriched_market), keywords):
                 markets.append(enriched_market)
                 seen_ids.add(market_id)
     return markets
@@ -310,9 +433,27 @@ def fetch_polymarket_fifa_events(
     page_size: int = 200,
     sleep_seconds: float = 0.0,
 ) -> list[dict[str, Any]]:
+    return fetch_polymarket_events(
+        client,
+        max_events=max_events,
+        page_size=page_size,
+        sleep_seconds=sleep_seconds,
+        keywords=FIFA_KEYWORDS,
+        event_tag_slugs=POLYMARKET_EVENT_TAG_SLUGS,
+    )
+
+
+def fetch_polymarket_events(
+    client: httpx.Client,
+    max_events: int = 1_000,
+    page_size: int = 200,
+    sleep_seconds: float = 0.0,
+    keywords: tuple[str, ...] = FIFA_KEYWORDS,
+    event_tag_slugs: tuple[str, ...] = POLYMARKET_EVENT_TAG_SLUGS,
+) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     seen_slugs: set[str] = set()
-    for tag_slug in POLYMARKET_EVENT_TAG_SLUGS:
+    for tag_slug in event_tag_slugs:
         inspected = 0
         offset = 0
         while inspected < max_events:
@@ -341,7 +482,7 @@ def fetch_polymarket_fifa_events(
                     continue
                 if event.get("active") is not True or event.get("closed") is True:
                     continue
-                if is_fifa_market(_polymarket_event_search_payload(event)):
+                if keyword_hits(_polymarket_event_search_payload(event), keywords):
                     events.append(event)
                     seen_slugs.add(slug)
             if len(batch) < limit:
@@ -356,6 +497,40 @@ def fetch_kalshi_fifa_markets(
     max_markets: int = 1_000,
     page_size: int = 200,
     sleep_seconds: float = 0.0,
+) -> list[dict[str, Any]]:
+    return fetch_kalshi_markets(
+        client,
+        max_markets=max_markets,
+        page_size=page_size,
+        sleep_seconds=sleep_seconds,
+        keywords=FIFA_KEYWORDS,
+        series_tickers=KALSHI_FIFA_SERIES_TICKERS,
+    )
+
+
+def fetch_kalshi_sports_markets(
+    client: httpx.Client,
+    max_markets: int = 1_000,
+    page_size: int = 200,
+    sleep_seconds: float = 0.0,
+) -> list[dict[str, Any]]:
+    return fetch_kalshi_markets(
+        client,
+        max_markets=max_markets,
+        page_size=page_size,
+        sleep_seconds=sleep_seconds,
+        keywords=SPORTS_KEYWORDS,
+        series_tickers=KALSHI_SPORTS_SERIES_TICKERS,
+    )
+
+
+def fetch_kalshi_markets(
+    client: httpx.Client,
+    max_markets: int = 1_000,
+    page_size: int = 200,
+    sleep_seconds: float = 0.0,
+    keywords: tuple[str, ...] = FIFA_KEYWORDS,
+    series_tickers: tuple[str, ...] = KALSHI_FIFA_SERIES_TICKERS,
 ) -> list[dict[str, Any]]:
     markets: list[dict[str, Any]] = []
     seen_tickers: set[str] = set()
@@ -375,7 +550,7 @@ def fetch_kalshi_fifa_markets(
             ticker = str(market.get("ticker") or "")
             if not ticker or ticker in seen_tickers:
                 continue
-            if is_fifa_market(_kalshi_search_payload(market)):
+            if keyword_hits(_kalshi_search_payload(market), keywords):
                 markets.append(market)
                 seen_tickers.add(ticker)
         cursor = str(payload.get("cursor") or "") if isinstance(payload, dict) else ""
@@ -384,7 +559,14 @@ def fetch_kalshi_fifa_markets(
         if sleep_seconds:
             time.sleep(sleep_seconds)
 
-    for event in fetch_kalshi_fifa_events(client, max_events=max_markets, page_size=min(page_size, 200), sleep_seconds=sleep_seconds):
+    for event in fetch_kalshi_events(
+        client,
+        max_events=max_markets,
+        page_size=min(page_size, 200),
+        sleep_seconds=sleep_seconds,
+        keywords=keywords,
+        series_tickers=series_tickers,
+    ):
         event_ticker = str(event.get("event_ticker") or "")
         if not event_ticker:
             continue
@@ -407,10 +589,28 @@ def fetch_kalshi_fifa_events(
     page_size: int = 200,
     sleep_seconds: float = 0.0,
 ) -> list[dict[str, Any]]:
+    return fetch_kalshi_events(
+        client,
+        max_events=max_events,
+        page_size=page_size,
+        sleep_seconds=sleep_seconds,
+        keywords=FIFA_KEYWORDS,
+        series_tickers=KALSHI_FIFA_SERIES_TICKERS,
+    )
+
+
+def fetch_kalshi_events(
+    client: httpx.Client,
+    max_events: int = 1_000,
+    page_size: int = 200,
+    sleep_seconds: float = 0.0,
+    keywords: tuple[str, ...] = FIFA_KEYWORDS,
+    series_tickers: tuple[str, ...] = KALSHI_FIFA_SERIES_TICKERS,
+) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     seen_event_tickers: set[str] = set()
     query_templates: list[dict[str, Any]] = [{"status": "open"}]
-    query_templates.extend({"status": "open", "series_ticker": series_ticker} for series_ticker in KALSHI_FIFA_SERIES_TICKERS)
+    query_templates.extend({"status": "open", "series_ticker": series_ticker} for series_ticker in series_tickers)
     for query_template in query_templates:
         inspected = 0
         cursor = ""
@@ -430,7 +630,7 @@ def fetch_kalshi_fifa_events(
                 event_ticker = str(event.get("event_ticker") or "")
                 if not event_ticker or event_ticker in seen_event_tickers:
                     continue
-                if is_fifa_market(_kalshi_event_search_payload(event)) or str(event.get("series_ticker") or "") in KALSHI_FIFA_SERIES_TICKERS:
+                if keyword_hits(_kalshi_event_search_payload(event), keywords) or str(event.get("series_ticker") or "") in series_tickers:
                     events.append(event)
                     seen_event_tickers.add(event_ticker)
             cursor = str(payload.get("cursor") or "") if isinstance(payload, dict) else ""
@@ -446,6 +646,37 @@ def normalize_fifa_candidates(
     kalshi_markets: list[dict[str, Any]],
     run_id: str,
     retrieved_at: str | None = None,
+) -> pd.DataFrame:
+    return normalize_market_candidates(
+        polymarket_markets,
+        kalshi_markets,
+        run_id=run_id,
+        retrieved_at=retrieved_at,
+        keywords=FIFA_KEYWORDS,
+    )
+
+
+def normalize_sports_candidates(
+    polymarket_markets: list[dict[str, Any]],
+    kalshi_markets: list[dict[str, Any]],
+    run_id: str,
+    retrieved_at: str | None = None,
+) -> pd.DataFrame:
+    return normalize_market_candidates(
+        polymarket_markets,
+        kalshi_markets,
+        run_id=run_id,
+        retrieved_at=retrieved_at,
+        keywords=SPORTS_KEYWORDS,
+    )
+
+
+def normalize_market_candidates(
+    polymarket_markets: list[dict[str, Any]],
+    kalshi_markets: list[dict[str, Any]],
+    run_id: str,
+    retrieved_at: str | None = None,
+    keywords: tuple[str, ...] = FIFA_KEYWORDS,
 ) -> pd.DataFrame:
     retrieved_at = retrieved_at or utc_now_iso()
     rows: list[dict[str, Any]] = []
@@ -468,7 +699,7 @@ def normalize_fifa_candidates(
                 "yes_token_id": str(token_ids[0]) if len(token_ids) > 0 else "",
                 "no_token_id": str(token_ids[1]) if len(token_ids) > 1 else "",
                 "rules_text": _polymarket_rules_text(market),
-                "keyword_hits": ",".join(fifa_keyword_hits(_polymarket_search_payload(market))),
+                "keyword_hits": ",".join(keyword_hits(_polymarket_search_payload(market), keywords)),
                 "raw_payload": compact_json(market),
             }
         )
@@ -490,7 +721,7 @@ def normalize_fifa_candidates(
                 "yes_token_id": "",
                 "no_token_id": "",
                 "rules_text": _kalshi_rules_text(market),
-                "keyword_hits": ",".join(fifa_keyword_hits(_kalshi_search_payload(market))),
+                "keyword_hits": ",".join(keyword_hits(_kalshi_search_payload(market), keywords)),
                 "raw_payload": compact_json(market),
             }
         )
@@ -530,11 +761,17 @@ def build_approval_candidates(candidates: pd.DataFrame) -> pd.DataFrame:
 def suggest_manual_mappings(approval_candidates: pd.DataFrame, min_score: float = 72.0) -> pd.DataFrame:
     if approval_candidates.empty:
         return pd.DataFrame(columns=SUGGESTED_MAPPING_COLUMNS)
-    polymarket = approval_candidates[approval_candidates["venue"] == "polymarket"]
-    kalshi = approval_candidates[approval_candidates["venue"] == "kalshi"]
+    polymarket = approval_candidates[approval_candidates["venue"] == "polymarket"].copy()
+    kalshi = approval_candidates[approval_candidates["venue"] == "kalshi"].copy()
+    if polymarket.empty or kalshi.empty:
+        return pd.DataFrame(columns=SUGGESTED_MAPPING_COLUMNS)
+    for frame in (polymarket, kalshi):
+        frame["_normalized_outcome"] = frame["outcome_label"].map(_normalize_name)
+        frame["_normalized_event_title"] = frame["event_title"].map(_normalize_name)
     rows: list[dict[str, Any]] = []
     for _, pm in polymarket.iterrows():
-        for _, ks in kalshi.iterrows():
+        candidates = _prefilter_mapping_candidates(pm, kalshi)
+        for _, ks in candidates.iterrows():
             if not _candidate_types_compatible(pm, ks):
                 continue
             score = candidate_match_score(pm, ks)
@@ -545,6 +782,39 @@ def suggest_manual_mappings(approval_candidates: pd.DataFrame, min_score: float 
     if frame.empty:
         return frame
     return frame.sort_values(["match_score", "market_type"], ascending=[False, True]).reset_index(drop=True)
+
+
+def _prefilter_mapping_candidates(pm: pd.Series, kalshi: pd.DataFrame) -> pd.DataFrame:
+    market_type = str(pm.get("market_type") or "")
+    candidates = kalshi[kalshi["market_type"] == market_type]
+    if candidates.empty:
+        return candidates
+
+    event_key = str(pm.get("event_match_key") or "")
+    outcome = str(pm.get("_normalized_outcome") or "")
+    event_year = str(pm.get("event_year") or "")
+    event_title = str(pm.get("_normalized_event_title") or "")
+
+    if market_type == "match_winner":
+        if not outcome:
+            return candidates.iloc[0:0]
+        if event_key and "event_match_key" in candidates:
+            candidates = candidates[candidates["event_match_key"] == event_key]
+        elif event_title:
+            candidates = candidates[candidates["_normalized_event_title"].map(lambda value: fuzz.token_set_ratio(event_title, value) >= 80)]
+        if outcome and "_normalized_outcome" in candidates:
+            candidates = candidates[candidates["_normalized_outcome"] == outcome]
+        return candidates
+
+    if event_year and "event_year" in candidates:
+        same_year = candidates[candidates["event_year"] == event_year]
+        if not same_year.empty:
+            candidates = same_year
+    if outcome and "_normalized_outcome" in candidates:
+        same_outcome = candidates[candidates["_normalized_outcome"] == outcome]
+        if not same_outcome.empty:
+            candidates = same_outcome
+    return candidates
 
 
 def classify_market_type(row: pd.Series | dict[str, Any]) -> str:
@@ -984,9 +1254,84 @@ def run_fifa_snapshot(
     discover: bool = True,
     client: httpx.Client | None = None,
 ) -> dict[str, Any]:
+    return run_market_snapshot(
+        output_dir=output_dir,
+        mapping_path=mapping_path,
+        run_id=run_id,
+        market_limit=market_limit,
+        page_size=page_size,
+        orderbook_depth=orderbook_depth,
+        min_net_edge=min_net_edge,
+        slippage_buffer_per_leg=slippage_buffer_per_leg,
+        fee_buffer_total=fee_buffer_total,
+        min_depth_per_leg=min_depth_per_leg,
+        discover=discover,
+        client=client,
+        scanner_label="FIFA",
+        run_id_prefix="fifa",
+        keywords=FIFA_KEYWORDS,
+        polymarket_event_tag_slugs=POLYMARKET_EVENT_TAG_SLUGS,
+        kalshi_series_tickers=KALSHI_FIFA_SERIES_TICKERS,
+    )
+
+
+def run_sports_snapshot(
+    output_dir: str | Path = DEFAULT_SPORTS_OUTPUT_DIR,
+    mapping_path: str | Path = DEFAULT_SPORTS_MAPPING_PATH,
+    run_id: str | None = None,
+    market_limit: int = 1_000,
+    page_size: int = 500,
+    orderbook_depth: int = 100,
+    min_net_edge: float = DEFAULT_MIN_NET_EDGE,
+    slippage_buffer_per_leg: float = DEFAULT_SLIPPAGE_BUFFER_PER_LEG,
+    fee_buffer_total: float = DEFAULT_FEE_BUFFER_TOTAL,
+    min_depth_per_leg: float = DEFAULT_MIN_DEPTH_PER_LEG,
+    discover: bool = True,
+    client: httpx.Client | None = None,
+) -> dict[str, Any]:
+    return run_market_snapshot(
+        output_dir=output_dir,
+        mapping_path=mapping_path,
+        run_id=run_id,
+        market_limit=market_limit,
+        page_size=page_size,
+        orderbook_depth=orderbook_depth,
+        min_net_edge=min_net_edge,
+        slippage_buffer_per_leg=slippage_buffer_per_leg,
+        fee_buffer_total=fee_buffer_total,
+        min_depth_per_leg=min_depth_per_leg,
+        discover=discover,
+        client=client,
+        scanner_label="sports",
+        run_id_prefix="sports",
+        keywords=SPORTS_KEYWORDS,
+        polymarket_event_tag_slugs=SPORTS_POLYMARKET_EVENT_TAG_SLUGS,
+        kalshi_series_tickers=KALSHI_SPORTS_SERIES_TICKERS,
+    )
+
+
+def run_market_snapshot(
+    output_dir: str | Path,
+    mapping_path: str | Path,
+    run_id: str | None = None,
+    market_limit: int = 1_000,
+    page_size: int = 500,
+    orderbook_depth: int = 100,
+    min_net_edge: float = DEFAULT_MIN_NET_EDGE,
+    slippage_buffer_per_leg: float = DEFAULT_SLIPPAGE_BUFFER_PER_LEG,
+    fee_buffer_total: float = DEFAULT_FEE_BUFFER_TOTAL,
+    min_depth_per_leg: float = DEFAULT_MIN_DEPTH_PER_LEG,
+    discover: bool = True,
+    client: httpx.Client | None = None,
+    scanner_label: str = "FIFA",
+    run_id_prefix: str = "fifa",
+    keywords: tuple[str, ...] = FIFA_KEYWORDS,
+    polymarket_event_tag_slugs: tuple[str, ...] = POLYMARKET_EVENT_TAG_SLUGS,
+    kalshi_series_tickers: tuple[str, ...] = KALSHI_FIFA_SERIES_TICKERS,
+) -> dict[str, Any]:
     if client is None:
-        with httpx.Client(timeout=DEFAULT_TIMEOUT_SECONDS, headers={"User-Agent": "poly-x-kalshi-fifa-scanner"}) as owned_client:
-            return run_fifa_snapshot(
+        with httpx.Client(timeout=DEFAULT_TIMEOUT_SECONDS, headers={"User-Agent": f"poly-x-kalshi-{scanner_label.lower()}-scanner"}) as owned_client:
+            return run_market_snapshot(
                 output_dir=output_dir,
                 mapping_path=mapping_path,
                 run_id=run_id,
@@ -999,17 +1344,40 @@ def run_fifa_snapshot(
                 min_depth_per_leg=min_depth_per_leg,
                 discover=discover,
                 client=owned_client,
+                scanner_label=scanner_label,
+                run_id_prefix=run_id_prefix,
+                keywords=keywords,
+                polymarket_event_tag_slugs=polymarket_event_tag_slugs,
+                kalshi_series_tickers=kalshi_series_tickers,
             )
 
-    run_id = run_id or _new_run_id()
+    run_id = run_id or _new_run_id(run_id_prefix)
     started_at = utc_now_iso()
     raw_polymarket_markets: list[dict[str, Any]] = []
     raw_kalshi_markets: list[dict[str, Any]] = []
     candidates = pd.DataFrame(columns=CANDIDATE_COLUMNS)
     if discover:
-        raw_polymarket_markets = fetch_polymarket_fifa_markets(client, max_markets=market_limit, page_size=page_size)
-        raw_kalshi_markets = fetch_kalshi_fifa_markets(client, max_markets=market_limit, page_size=min(page_size, 200))
-        candidates = normalize_fifa_candidates(raw_polymarket_markets, raw_kalshi_markets, run_id=run_id, retrieved_at=started_at)
+        raw_polymarket_markets = fetch_polymarket_markets(
+            client,
+            max_markets=market_limit,
+            page_size=page_size,
+            keywords=keywords,
+            event_tag_slugs=polymarket_event_tag_slugs,
+        )
+        raw_kalshi_markets = fetch_kalshi_markets(
+            client,
+            max_markets=market_limit,
+            page_size=min(page_size, 200),
+            keywords=keywords,
+            series_tickers=kalshi_series_tickers,
+        )
+        candidates = normalize_market_candidates(
+            raw_polymarket_markets,
+            raw_kalshi_markets,
+            run_id=run_id,
+            retrieved_at=started_at,
+            keywords=keywords,
+        )
     approval_candidates = build_approval_candidates(candidates)
     suggested_mappings = suggest_manual_mappings(approval_candidates)
 
@@ -1082,16 +1450,90 @@ def watch_fifa_arbitrage(
     sleeper: Callable[[float], None] = time.sleep,
     client_factory: Callable[[], httpx.Client] | None = None,
 ) -> list[dict[str, Any]]:
+    return watch_market_arbitrage(
+        output_dir=output_dir,
+        mapping_path=mapping_path,
+        interval_seconds=interval_seconds,
+        max_ticks=max_ticks,
+        market_limit=market_limit,
+        page_size=page_size,
+        orderbook_depth=orderbook_depth,
+        min_net_edge=min_net_edge,
+        slippage_buffer_per_leg=slippage_buffer_per_leg,
+        fee_buffer_total=fee_buffer_total,
+        min_depth_per_leg=min_depth_per_leg,
+        discover=discover,
+        sleeper=sleeper,
+        client_factory=client_factory,
+        scanner_label="FIFA",
+        snapshot_runner=run_fifa_snapshot,
+    )
+
+
+def watch_sports_arbitrage(
+    output_dir: str | Path = DEFAULT_SPORTS_OUTPUT_DIR,
+    mapping_path: str | Path = DEFAULT_SPORTS_MAPPING_PATH,
+    interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
+    max_ticks: int | None = None,
+    market_limit: int = 1_000,
+    page_size: int = 500,
+    orderbook_depth: int = 100,
+    min_net_edge: float = DEFAULT_MIN_NET_EDGE,
+    slippage_buffer_per_leg: float = DEFAULT_SLIPPAGE_BUFFER_PER_LEG,
+    fee_buffer_total: float = DEFAULT_FEE_BUFFER_TOTAL,
+    min_depth_per_leg: float = DEFAULT_MIN_DEPTH_PER_LEG,
+    discover: bool = True,
+    sleeper: Callable[[float], None] = time.sleep,
+    client_factory: Callable[[], httpx.Client] | None = None,
+) -> list[dict[str, Any]]:
+    return watch_market_arbitrage(
+        output_dir=output_dir,
+        mapping_path=mapping_path,
+        interval_seconds=interval_seconds,
+        max_ticks=max_ticks,
+        market_limit=market_limit,
+        page_size=page_size,
+        orderbook_depth=orderbook_depth,
+        min_net_edge=min_net_edge,
+        slippage_buffer_per_leg=slippage_buffer_per_leg,
+        fee_buffer_total=fee_buffer_total,
+        min_depth_per_leg=min_depth_per_leg,
+        discover=discover,
+        sleeper=sleeper,
+        client_factory=client_factory,
+        scanner_label="sports",
+        snapshot_runner=run_sports_snapshot,
+    )
+
+
+def watch_market_arbitrage(
+    output_dir: str | Path,
+    mapping_path: str | Path,
+    interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
+    max_ticks: int | None = None,
+    market_limit: int = 1_000,
+    page_size: int = 500,
+    orderbook_depth: int = 100,
+    min_net_edge: float = DEFAULT_MIN_NET_EDGE,
+    slippage_buffer_per_leg: float = DEFAULT_SLIPPAGE_BUFFER_PER_LEG,
+    fee_buffer_total: float = DEFAULT_FEE_BUFFER_TOTAL,
+    min_depth_per_leg: float = DEFAULT_MIN_DEPTH_PER_LEG,
+    discover: bool = True,
+    sleeper: Callable[[float], None] = time.sleep,
+    client_factory: Callable[[], httpx.Client] | None = None,
+    scanner_label: str = "FIFA",
+    snapshot_runner: Callable[..., dict[str, Any]] = run_fifa_snapshot,
+) -> list[dict[str, Any]]:
     summaries: list[dict[str, Any]] = []
     tick = 0
     backoff_seconds = interval_seconds
     while max_ticks is None or tick < max_ticks:
         try:
             factory = client_factory or (
-                lambda: httpx.Client(timeout=DEFAULT_TIMEOUT_SECONDS, headers={"User-Agent": "poly-x-kalshi-fifa-scanner"})
+                lambda: httpx.Client(timeout=DEFAULT_TIMEOUT_SECONDS, headers={"User-Agent": f"poly-x-kalshi-{scanner_label.lower()}-scanner"})
             )
             with factory() as client:
-                result = run_fifa_snapshot(
+                result = snapshot_runner(
                     output_dir=output_dir,
                     mapping_path=mapping_path,
                     market_limit=market_limit,
@@ -1106,13 +1548,13 @@ def watch_fifa_arbitrage(
                 )
             summary = _snapshot_summary(result)
             summaries.append(summary)
-            _print_alerts(result["tables"]["arbitrage_alerts"])
+            _print_alerts(result["tables"]["arbitrage_alerts"], scanner_label=scanner_label)
             tick += 1
             backoff_seconds = interval_seconds
             if max_ticks is None or tick < max_ticks:
                 sleeper(interval_seconds)
         except KeyboardInterrupt:
-            print("Stopping FIFA arbitrage watcher.")
+            print(f"Stopping {scanner_label} arbitrage watcher.")
             break
         except Exception as exc:  # pragma: no cover - exact exception paths are covered through run recording tests
             run_id = _new_run_id()
@@ -1376,9 +1818,26 @@ def build_snapshot_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def build_sports_snapshot_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run one cross-sports Polymarket/Kalshi arbitrage snapshot")
+    _add_common_args(parser, default_output_dir=DEFAULT_SPORTS_OUTPUT_DIR, default_mapping_path=DEFAULT_SPORTS_MAPPING_PATH)
+    parser.add_argument("--run-id")
+    parser.add_argument("--no-discovery", action="store_true", help="Skip market discovery and only score approved mappings")
+    return parser
+
+
 def build_watch_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Continuously poll FIFA cross-market arbitrage snapshots")
     _add_common_args(parser)
+    parser.add_argument("--interval-seconds", type=float, default=DEFAULT_INTERVAL_SECONDS)
+    parser.add_argument("--max-ticks", type=int)
+    parser.add_argument("--no-discovery", action="store_true", help="Skip market discovery and only score approved mappings")
+    return parser
+
+
+def build_sports_watch_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Continuously poll cross-sports Polymarket/Kalshi arbitrage snapshots")
+    _add_common_args(parser, default_output_dir=DEFAULT_SPORTS_OUTPUT_DIR, default_mapping_path=DEFAULT_SPORTS_MAPPING_PATH)
     parser.add_argument("--interval-seconds", type=float, default=DEFAULT_INTERVAL_SECONDS)
     parser.add_argument("--max-ticks", type=int)
     parser.add_argument("--no-discovery", action="store_true", help="Skip market discovery and only score approved mappings")
@@ -1402,7 +1861,28 @@ def snapshot_cli_main(argv: list[str] | None = None, client: httpx.Client | None
         client=client,
     )
     print(json.dumps(_snapshot_summary(result), indent=2, sort_keys=True, default=str))
-    _print_alerts(result["tables"]["arbitrage_alerts"])
+    _print_alerts(result["tables"]["arbitrage_alerts"], scanner_label="FIFA")
+    return 0
+
+
+def sports_snapshot_cli_main(argv: list[str] | None = None, client: httpx.Client | None = None) -> int:
+    args = build_sports_snapshot_parser().parse_args(argv)
+    result = run_sports_snapshot(
+        output_dir=args.output_dir,
+        mapping_path=args.mapping_path,
+        run_id=args.run_id,
+        market_limit=args.market_limit,
+        page_size=args.page_size,
+        orderbook_depth=args.orderbook_depth,
+        min_net_edge=args.min_net_edge,
+        slippage_buffer_per_leg=args.slippage_buffer_per_leg,
+        fee_buffer_total=args.fee_buffer_total,
+        min_depth_per_leg=args.min_depth_per_leg,
+        discover=not args.no_discovery,
+        client=client,
+    )
+    print(json.dumps(_snapshot_summary(result), indent=2, sort_keys=True, default=str))
+    _print_alerts(result["tables"]["arbitrage_alerts"], scanner_label="sports")
     return 0
 
 
@@ -1426,9 +1906,33 @@ def watch_cli_main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _add_common_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--mapping-path", default=DEFAULT_MAPPING_PATH)
+def sports_watch_cli_main(argv: list[str] | None = None) -> int:
+    args = build_sports_watch_parser().parse_args(argv)
+    summaries = watch_sports_arbitrage(
+        output_dir=args.output_dir,
+        mapping_path=args.mapping_path,
+        interval_seconds=args.interval_seconds,
+        max_ticks=args.max_ticks,
+        market_limit=args.market_limit,
+        page_size=args.page_size,
+        orderbook_depth=args.orderbook_depth,
+        min_net_edge=args.min_net_edge,
+        slippage_buffer_per_leg=args.slippage_buffer_per_leg,
+        fee_buffer_total=args.fee_buffer_total,
+        min_depth_per_leg=args.min_depth_per_leg,
+        discover=not args.no_discovery,
+    )
+    print(json.dumps({"ticks": summaries}, indent=2, sort_keys=True, default=str))
+    return 0
+
+
+def _add_common_args(
+    parser: argparse.ArgumentParser,
+    default_output_dir: str = DEFAULT_OUTPUT_DIR,
+    default_mapping_path: str = DEFAULT_MAPPING_PATH,
+) -> None:
+    parser.add_argument("--output-dir", default=default_output_dir)
+    parser.add_argument("--mapping-path", default=default_mapping_path)
     parser.add_argument("--market-limit", type=int, default=1_000)
     parser.add_argument("--page-size", type=int, default=500)
     parser.add_argument("--orderbook-depth", type=int, default=100)
@@ -1694,13 +2198,13 @@ def _snapshot_summary(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _print_alerts(alerts: pd.DataFrame) -> None:
+def _print_alerts(alerts: pd.DataFrame, scanner_label: str = "FIFA") -> None:
     if alerts.empty or "is_alert" not in alerts:
-        print("No FIFA cross-market alerts.")
+        print(f"No {scanner_label} cross-market alerts.")
         return
     actual = alerts[alerts["is_alert"] == True]  # noqa: E712
     if actual.empty:
-        print("No FIFA cross-market alerts.")
+        print(f"No {scanner_label} cross-market alerts.")
         return
     for _, row in actual.iterrows():
         print(
@@ -1765,6 +2269,8 @@ def _candidate_types_compatible(left: pd.Series | dict[str, Any], right: pd.Seri
     left_outcome = _normalize_name(_row_get(left, "outcome_label"))
     right_outcome = _normalize_name(_row_get(right, "outcome_label"))
     if market_type == "match_winner":
+        if not left_outcome or not right_outcome:
+            return False
         left_event_key = str(_row_get(left, "event_match_key") or "")
         right_event_key = str(_row_get(right, "event_match_key") or "")
         if left_event_key and right_event_key and left_event_key != right_event_key:
@@ -2003,8 +2509,9 @@ def _append_error(current: str, value: str) -> str:
     return ";".join(part for part in [current, value] if part)
 
 
-def _new_run_id() -> str:
-    return datetime.now(UTC).strftime("fifa-%Y%m%dT%H%M%SZ")
+def _new_run_id(prefix: str = "fifa") -> str:
+    safe_prefix = _slugify(prefix) or "run"
+    return f"{safe_prefix}-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
 
 
 if __name__ == "__main__":

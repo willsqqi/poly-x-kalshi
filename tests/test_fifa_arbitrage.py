@@ -15,12 +15,17 @@ from prediction_market.fifa_arbitrage import (
     build_strategy_signals,
     build_approval_candidates,
     fetch_kalshi_fifa_markets,
+    fetch_kalshi_sports_markets,
     fetch_mapped_orderbooks,
     fetch_polymarket_fifa_markets,
+    fetch_polymarket_sports_markets,
     normalize_fifa_candidates,
+    normalize_sports_candidates,
     run_fifa_snapshot,
+    run_sports_snapshot,
     score_cross_market_arbitrage,
     snapshot_cli_main,
+    sports_snapshot_cli_main,
     suggest_manual_mappings,
     validate_manual_mappings,
     watch_fifa_arbitrage,
@@ -44,6 +49,26 @@ def test_fifa_market_discovery_filters_both_venues() -> None:
     assert set(frame["venue"]) == {"polymarket", "kalshi"}
     assert frame.loc[frame["venue"] == "polymarket", "yes_token_id"].iloc[0] == "pm-yes"
     assert "world cup" in frame.loc[frame["venue"] == "kalshi", "keyword_hits"].iloc[0]
+
+
+def test_cross_sports_discovery_finds_non_fifa_pairs() -> None:
+    with httpx.Client(transport=httpx.MockTransport(_sports_discovery_handler)) as client:
+        polymarket = fetch_polymarket_sports_markets(client, max_markets=10, page_size=10)
+        kalshi = fetch_kalshi_sports_markets(client, max_markets=10, page_size=10)
+
+    assert [market["conditionId"] for market in polymarket] == ["0xnba"]
+    assert [market["ticker"] for market in kalshi] == ["KXNBA-26JUN23LALBOS-LAL"]
+
+    frame = normalize_sports_candidates(polymarket, kalshi, run_id="sports-run", retrieved_at="2026-06-23T00:00:00Z")
+    approval = build_approval_candidates(frame)
+    suggestions = suggest_manual_mappings(approval, min_score=70)
+
+    assert set(frame["venue"]) == {"polymarket", "kalshi"}
+    assert "nba" in frame.loc[frame["venue"] == "polymarket", "keyword_hits"].iloc[0]
+    assert approval["market_type"].tolist() == ["match_winner", "match_winner"]
+    assert not suggestions.empty
+    assert suggestions.iloc[0]["event_name"] == "Los Angeles Lakers vs. Boston Celtics"
+    assert suggestions.iloc[0]["kalshi_ticker"] == "KXNBA-26JUN23LALBOS-LAL"
 
 
 def test_kalshi_event_discovery_expands_world_soccer_cup_markets() -> None:
@@ -326,6 +351,38 @@ def test_snapshot_cli_writes_valid_no_alert_run_with_empty_mappings(tmp_path: Pa
     assert len(latest_approval) == 2
 
 
+def test_sports_snapshot_cli_writes_review_tables_with_empty_mappings(tmp_path: Path) -> None:
+    mapping_path = tmp_path / "sports_mappings.csv"
+    mapping_path.write_text(",".join(MAPPING_COLUMNS) + "\n", encoding="utf-8")
+
+    with httpx.Client(transport=httpx.MockTransport(_sports_discovery_handler)) as client:
+        exit_code = sports_snapshot_cli_main(
+            [
+                "--output-dir",
+                str(tmp_path / "sports-out"),
+                "--mapping-path",
+                str(mapping_path),
+                "--run-id",
+                "sports-empty",
+                "--market-limit",
+                "10",
+                "--page-size",
+                "10",
+            ],
+            client=client,
+        )
+
+    assert exit_code == 0
+    runs = pd.read_parquet(tmp_path / "sports-out" / "processed" / "scanner_runs.parquet")
+    suggestions = pd.read_parquet(tmp_path / "sports-out" / "processed" / "suggested_mappings.parquet")
+    signals = pd.read_parquet(tmp_path / "sports-out" / "processed" / "strategy_signals.parquet")
+    assert runs.iloc[0]["run_id"] == "sports-empty"
+    assert runs.iloc[0]["candidate_count"] == 2
+    assert runs.iloc[0]["approved_mapping_count"] == 0
+    assert not suggestions.empty
+    assert signals.empty
+
+
 def test_snapshot_and_watch_loop_with_mocked_orderbooks(tmp_path: Path) -> None:
     mapping_path = tmp_path / "mappings.csv"
     pd.DataFrame([_mapping_row()], columns=MAPPING_COLUMNS).to_csv(mapping_path, index=False)
@@ -435,6 +492,18 @@ def _discovery_handler(request: httpx.Request) -> httpx.Response:
     raise AssertionError(f"Unexpected request: {request.url}")
 
 
+def _sports_discovery_handler(request: httpx.Request) -> httpx.Response:
+    if request.url.host == "gamma-api.polymarket.com" and request.url.path == "/markets":
+        return httpx.Response(200, json=[_polymarket_nba_hit(), _polymarket_miss()])
+    if request.url.host == "gamma-api.polymarket.com" and request.url.path == "/events":
+        return httpx.Response(200, json=[])
+    if request.url.host == "external-api.kalshi.com" and request.url.path == "/trade-api/v2/markets":
+        return httpx.Response(200, json={"markets": [_kalshi_nba_hit(), _kalshi_miss()], "cursor": ""})
+    if request.url.host == "external-api.kalshi.com" and request.url.path == "/trade-api/v2/events":
+        return httpx.Response(200, json={"events": [], "cursor": ""})
+    raise AssertionError(f"Unexpected request: {request.url}")
+
+
 def _orderbook_handler(request: httpx.Request) -> httpx.Response:
     if request.url.host == "clob.polymarket.com":
         token_id = request.url.params.get("token_id")
@@ -490,6 +559,23 @@ def _polymarket_hit() -> dict:
         "outcomes": '["USA", "France or draw"]',
         "clobTokenIds": '["pm-yes", "pm-no"]',
         "description": "2026 FIFA World Cup match winner in regular time.",
+    }
+
+
+def _polymarket_nba_hit() -> dict:
+    return {
+        "id": "pm-nba-market",
+        "conditionId": "0xnba",
+        "slug": "nba-lal-bos-2026-06-23-lal",
+        "question": "Will Los Angeles Lakers win on 2026-06-23?",
+        "active": True,
+        "closed": False,
+        "outcomes": '["Yes", "No"]',
+        "clobTokenIds": '["pm-lal-yes", "pm-lal-no"]',
+        "description": "NBA game Los Angeles Lakers vs. Boston Celtics. Resolves Yes if the Lakers win.",
+        "_event_context_title": "Los Angeles Lakers vs. Boston Celtics",
+        "_event_context_start_time": "2026-06-23T23:00:00Z",
+        "_event_context_sport": "basketball",
     }
 
 
@@ -615,6 +701,23 @@ def _kalshi_hit() -> dict:
         "yes_sub_title": "USA wins",
         "no_sub_title": "USA does not win",
         "rules_primary": "Market resolves Yes if USA wins this World Cup match in regulation.",
+    }
+
+
+def _kalshi_nba_hit() -> dict:
+    return {
+        "ticker": "KXNBA-26JUN23LALBOS-LAL",
+        "event_ticker": "KXNBA-26JUN23LALBOS",
+        "series_ticker": "KXNBA",
+        "title": "Los Angeles Lakers vs Boston Celtics Winner?",
+        "subtitle": "Lakers vs Celtics",
+        "category": "Sports",
+        "status": "active",
+        "close_time": "2026-06-23T23:00:00Z",
+        "yes_sub_title": "Los Angeles Lakers",
+        "no_sub_title": "Los Angeles Lakers",
+        "rules_primary": "If Los Angeles Lakers wins the Los Angeles Lakers vs Boston Celtics professional NBA basketball game, then the market resolves to Yes.",
+        "rules_secondary": "The market refers to the listed NBA game winner.",
     }
 
 

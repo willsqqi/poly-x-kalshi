@@ -1,8 +1,8 @@
 # Poly x Kalshi
 
-Research-only cross-market scanner for FIFA / World Cup prediction-market price gaps between Polymarket and Kalshi.
+Research-only cross-market scanner for prediction-market price gaps between Polymarket and Kalshi.
 
-The current focus is the FIFA / World Cup scanner workflow:
+The current production burn-in is the FIFA / World Cup scanner workflow:
 
 ```text
 discover equivalent football markets
@@ -39,6 +39,33 @@ Short smoke loop:
 ```bash
 poly-x-kalshi-fifa-watch --no-discovery --max-ticks 2 --interval-seconds 5
 ```
+
+## Cross-Sports Discovery
+
+Use the broader sports scanner to look for more Polymarket/Kalshi pairs across soccer, basketball, baseball, hockey, football, tennis, combat sports, golf, racing, and related sports categories. This path is discovery-first: it writes review tables, but alerts still require manual approval in a separate mapping file.
+
+```bash
+poly-x-kalshi-sports-snapshot
+```
+
+The broad scanner writes to:
+
+```text
+data/cross_sports_arbitrage/
+├── processed/latest/approval_candidates.csv
+├── processed/latest/suggested_mappings.csv
+├── processed/latest/orderbook_snapshots.csv
+├── processed/latest/strategy_signals.csv
+└── processed/latest/scanner_runs.csv
+```
+
+The approval gate is:
+
+```text
+config/cross_sports_market_mappings.csv
+```
+
+In the first broad scan, the system found thousands of sports candidates but only approve-ready exact Polymarket/Kalshi pairs in World Cup match-winner markets. That is useful evidence: non-FIFA sports overlap exists in the raw candidate universe, but the current Kalshi/Polymarket live products are often different shapes, such as parlays, totals, props, or multi-game markets. Treat non-exact suggestions as research leads, not trading candidates.
 
 ## Cost-Conscious GCP Run
 
