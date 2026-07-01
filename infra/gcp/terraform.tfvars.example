@@ -5,11 +5,51 @@ name_prefix      = "poly-x-kalshi"
 
 # Cost-conscious default: create infra but keep collection paused until you are ready.
 scheduler_paused = true
+sports_scheduler_paused = true
+sports_discovery_scheduler_paused = true
+daily_pipeline_scheduler_paused = true
+daily_pipeline_timeout_seconds  = 14400
 
 # One snapshot per minute. Use "*/5 * * * *" for a cheaper slower burn-in.
 schedule = "* * * * *"
+sports_schedule = "*/5 * * * *"
+sports_discovery_schedule = "15 6 * * *"
+daily_pipeline_schedule = "30 7 * * *"
 
 cpu    = "1"
 memory = "512Mi"
+sports_discovery_cpu    = "2"
+sports_discovery_memory = "2Gi"
+daily_pipeline_cpu      = "4"
+daily_pipeline_memory   = "16Gi"
+daily_pipeline_kalshi_event_market_workers = 2
+daily_pipeline_sports_only                 = true
+
+cloud_sql_database_version    = "POSTGRES_15"
+cloud_sql_tier                = "db-custom-2-7680"
+cloud_sql_disk_size_gb        = 10
+cloud_sql_backup_enabled      = true
+cloud_sql_deletion_protection = true
+cloud_sql_database_name       = "prediction_market"
+cloud_sql_user                = "prediction_market_app"
+
+# Keep off unless you intentionally want daily discovery to call Vertex AI Gemini embeddings.
+sports_discovery_semantic_embedding_provider = "off" # or "vertex-gemini"
+sports_discovery_semantic_embedding_dim      = 768
+sports_discovery_semantic_top_k              = 20
+sports_discovery_semantic_min_score          = 72
+sports_discovery_semantic_batch_size         = 64
+sports_discovery_semantic_batch_sleep_seconds = 5
+sports_discovery_semantic_retry_initial_seconds = 60
+sports_discovery_semantic_max_retries           = 8
+sports_discovery_semantic_cache_flush_batches   = 2
+sports_discovery_semantic_max_embedding_texts   = 0
+
+# Optional Gemini LLM review of already-generated suggestions. It annotates suggestions
+# for manual review; it never approves pairs.
+sports_discovery_ai_pair_review_provider  = "off" # or "vertex-gemini"
+sports_discovery_ai_pair_review_model     = "gemini-2.0-flash"
+sports_discovery_ai_pair_review_limit     = 250
+sports_discovery_ai_pair_review_min_score = 80
 
 raw_retention_days = 14

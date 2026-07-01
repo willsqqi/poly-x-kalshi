@@ -8,7 +8,7 @@ resource "google_storage_bucket" "scanner" {
   lifecycle_rule {
     condition {
       age            = var.raw_retention_days
-      matches_prefix = ["fifa_arbitrage/raw/"]
+      matches_prefix = ["fifa_arbitrage/raw/", "cross_sports_arbitrage/raw/"]
       with_state     = "ANY"
     }
     action {

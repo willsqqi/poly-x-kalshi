@@ -14,6 +14,8 @@ from prediction_market.fifa_arbitrage import (
     approved_mappings,
     build_strategy_signals,
     build_approval_candidates,
+    classify_market_type,
+    extract_outcome_label,
     fetch_kalshi_fifa_markets,
     fetch_kalshi_sports_markets,
     fetch_mapped_orderbooks,
@@ -31,7 +33,13 @@ from prediction_market.fifa_arbitrage import (
     watch_fifa_arbitrage,
     _gcs_blob_name,
     _gcs_uri,
+    _attach_semantic_vectors,
     _is_gcs_uri,
+    _obvious_parserless_pair_rejection_reason,
+    _parserless_event_key,
+    _parserless_event_pair_score,
+    _event_scope_key,
+    _semantic_embedding_lookup,
     _split_gcs_uri,
 )
 
@@ -146,13 +154,10 @@ def test_world_cup_game_event_children_create_exact_match_suggestions() -> None:
     assert set(approval["outcome_label"]) == {"Spain", "Saudi Arabia", "Tie"}
     assert len(suggestions) == 3
 
-    by_outcome = {row["outcome_label"]: row for _, row in suggestions.iterrows()}
-    assert by_outcome["Spain"]["polymarket_slug"] == "fifwc-esp-ksa-2026-06-21-esp"
-    assert by_outcome["Spain"]["kalshi_ticker"] == "KXWCGAME-26JUN21ESPKSA-ESP"
-    assert by_outcome["Spain"]["match_score"] == 100.0
-    assert by_outcome["Spain"]["draw_handling"] == "draw/Tie is a separate outcome; team-winner markets resolve No on draw"
-    assert by_outcome["Tie"]["polymarket_slug"] == "fifwc-esp-ksa-2026-06-21-draw"
-    assert by_outcome["Tie"]["kalshi_ticker"] == "KXWCGAME-26JUN21ESPKSA-TIE"
+    pairs = {(row["polymarket_slug"], row["kalshi_ticker"], row["outcome_label"]) for _, row in suggestions.iterrows()}
+    assert ("fifwc-esp-ksa-2026-06-21-esp", "KXWCGAME-26JUN21ESPKSA-ESP", "Spain") in pairs
+    assert ("fifwc-esp-ksa-2026-06-21-draw", "KXWCGAME-26JUN21ESPKSA-TIE", "Tie") in pairs
+    assert ("fifwc-esp-ksa-2026-06-21-esp", "KXWCGAME-26JUN21ESPKSA-TIE", "Spain") not in pairs
 
 
 def test_approval_candidates_classify_market_types_and_suggest_pairs() -> None:
@@ -199,6 +204,455 @@ def test_approval_candidates_classify_market_types_and_suggest_pairs() -> None:
     assert list(suggestions.columns) == SUGGESTED_MAPPING_COLUMNS
     assert suggestions.iloc[0]["market_type"] == "host_country"
     assert suggestions.iloc[0]["kalshi_ticker"] == "KXWCHOST-2038-GER"
+
+
+def test_player_prop_and_exact_score_are_not_simple_winners() -> None:
+    assert (
+        classify_market_type(
+            {
+                "title": "Daizen Maeda: 2+ goals",
+                "event_title": "Brazil vs. Japan - Player Props",
+                "outcomes": '["Yes", "No"]',
+            }
+        )
+        == "other"
+    )
+    assert (
+        classify_market_type(
+            {
+                "title": "Exact Score: Brazil 3 - 2 Japan?",
+                "event_title": "Brazil vs. Japan - Exact Score",
+                "outcomes": '["Yes", "No"]',
+            }
+        )
+        == "other"
+    )
+
+
+def test_non_winner_props_and_stat_leaders_are_not_match_winners() -> None:
+    assert (
+        classify_market_type(
+            {
+                "title": 'Will the announcers say "Nutmeg" during the South Africa vs Canada FIFA World Cup Match?',
+                "event_title": 'Will the announcers say "Nutmeg" during the South Africa vs Canada FIFA World Cup Match?',
+                "outcomes": '["Yes", "No"]',
+            }
+        )
+        == "other"
+    )
+    assert (
+        classify_market_type(
+            {
+                "title": "Game 1: Both Teams Slay Baron Nashor?",
+                "event_title": "LoL: T1 vs Karmine Corp (BO5) - Mid-Season Invitational Play-In",
+                "outcomes": '["Yes", "No"]',
+            }
+        )
+        == "other"
+    )
+    assert (
+        classify_market_type(
+            {
+                "title": "Mike Maignan: 3+ saves",
+                "event_title": "France vs. Germany - Player Props",
+                "outcomes": '["Yes", "No"]',
+            }
+        )
+        == "other"
+    )
+    assert (
+        classify_market_type(
+            {
+                "title": "Game 1: Ends in Daytime?",
+                "event_title": "LoL: T1 vs Karmine Corp (BO5) - Mid-Season Invitational Play-In",
+                "outcomes": '["Yes", "No"]',
+            }
+        )
+        == "other"
+    )
+    assert (
+        classify_market_type(
+            {
+                "title": "Will Tarik Skubal lead the MLB in ERA for the 2026 regular season?",
+                "event_title": "MLB: ERA Leader",
+                "outcomes": '["Yes", "No"]',
+            }
+        )
+        == "player_award"
+    )
+    assert (
+        classify_market_type(
+            {
+                "title": "Will Aaron Judge have the highest batting average in the 2026 MLB regular season?",
+                "event_title": "MLB: Batting Average Leader",
+                "outcomes": '["Yes", "No"]',
+            }
+        )
+        == "player_award"
+    )
+    assert (
+        classify_market_type(
+            {
+                "title": "Will Eddie Segura win 2026 MLS Defender of the Year?",
+                "event_title": "2026 MLS Defender of the Year",
+                "outcomes": '["Yes", "No"]',
+            }
+        )
+        == "player_award"
+    )
+    assert (
+        classify_market_type(
+            {
+                "title": "Will Lionel Messi win the 2026 MLS Golden Boot?",
+                "event_title": "2026 MLS Golden Boot",
+                "outcomes": '["Yes", "No"]',
+            }
+        )
+        == "player_award"
+    )
+    assert (
+        classify_market_type(
+            {
+                "title": "Will Angel Reese have the highest rebounds per game in the WNBA 2026 regular season?",
+                "event_title": "WNBA: Rebounds Per Game Leader",
+                "outcomes": '["Yes", "No"]',
+            }
+        )
+        == "player_award"
+    )
+    assert (
+        classify_market_type(
+            {
+                "title": "Will Jesús Luzardo strike out the most batters during the 2026 MLB regular season?",
+                "event_title": "MLB: Strikeout Leader",
+                "outcomes": '["Yes", "No"]',
+            }
+        )
+        == "player_award"
+    )
+    assert (
+        classify_market_type(
+            {
+                "title": "Will Xavi Simons record the most assists at the 2026 FIFA World Cup?",
+                "event_title": "World Cup Most Assists",
+                "outcomes": '["Yes", "No"]',
+            }
+        )
+        == "player_award"
+    )
+    assert (
+        classify_market_type(
+            {
+                "title": "Will Corbin Carroll hit the most triples in the 2026 MLB regular season?",
+                "event_title": "MLB: Triples Leader",
+                "outcomes": '["Yes", "No"]',
+            }
+        )
+        == "player_award"
+    )
+    assert (
+        classify_market_type(
+            {
+                "title": "Will Aaron Judge win the 2026 American League Hank Aaron Award?",
+                "event_title": "2026 American League Hank Aaron Award",
+                "outcomes": '["Yes", "No"]',
+            }
+        )
+        == "player_award"
+    )
+    assert (
+        classify_market_type(
+            {
+                "title": "Will Shohei Ohtani win the 2026 Edgar Martinez Outstanding Designated Hitter Award?",
+                "event_title": "2026 Edgar Martinez Outstanding Designated Hitter Award",
+                "outcomes": '["Yes", "No"]',
+            }
+        )
+        == "player_award"
+    )
+    assert (
+        classify_market_type(
+            {
+                "title": "Will Ivar Stenberg win the 2026-27 Calder Trophy?",
+                "event_title": "NHL: 2026-27 Calder Trophy",
+                "outcomes": '["Yes", "No"]',
+            }
+        )
+        == "player_award"
+    )
+    assert (
+        classify_market_type(
+            {
+                "title": "Will Aaron Judge record the most intentional walks during the 2026 MLB regular season?",
+                "event_title": "MLB: Player to Record Most Intentional Walks?",
+                "outcomes": '["Yes", "No"]',
+            }
+        )
+        == "player_award"
+    )
+    assert (
+        classify_market_type(
+            {
+                "title": "Will Alpine have the highest constructor score at the 2026 F1 Belgian Grand Prix?",
+                "event_title": "Belgian Grand Prix: Which Constructor Scores 1st?",
+                "outcomes": '["Yes", "No"]',
+            }
+        )
+        == "team_stat"
+    )
+    assert (
+        classify_market_type(
+            {
+                "title": "Will LCK (South Korea) Region Win the Most Series in the MSI 2026 Knockout Stage",
+                "event_title": "Which Region will get the Most Series Wins During the MSI 2026 Knockout Stage",
+                "outcomes": '["Yes", "No"]',
+            }
+        )
+        == "team_stat"
+    )
+    assert (
+        classify_market_type(
+            {
+                "title": "Will Sarah Ashlee Barker have the highest three point percentage in the WNBA 2026 regular season?",
+                "event_title": "WNBA: Three Point Percentage Leader",
+                "outcomes": '["Yes", "No"]',
+            }
+        )
+        == "player_award"
+    )
+    assert (
+        classify_market_type(
+            {
+                "title": "Game 3: Both Teams Beat Roshan?",
+                "event_title": "Dota 2: Team A vs Team B",
+                "outcomes": '["Yes", "No"]',
+            }
+        )
+        == "other"
+    )
+    assert (
+        classify_market_type(
+            {
+                "title": "Will Max Holloway win by KO or TKO?",
+                "event_title": "Max Holloway vs. Conor McGregor (Welterweight, Main Card)",
+                "outcomes": '["Yes", "No"]',
+            }
+        )
+        == "other"
+    )
+    assert (
+        classify_market_type(
+            {
+                "title": "Wimbledon ATP: Completed Match: Adam Walton vs Dino Prizmic",
+                "event_title": "Adam Walton vs Dino Prizmic",
+                "outcomes": '["Yes", "No"]',
+            }
+        )
+        == "other"
+    )
+    assert (
+        classify_market_type(
+            {
+                "title": "Will Kyler Murray be the Vikings' Week 1 starting QB?",
+                "event_title": "Vikings Week 1 Starting QB",
+                "outcomes": '["Yes", "No"]',
+            }
+        )
+        == "other"
+    )
+
+
+def test_tennis_tournament_winner_is_championship_winner() -> None:
+    row = {
+        "title": "Will Alexander Zverev be the 2026 Men’s Wimbledon winner?",
+        "event_title": "2026 Men’s Wimbledon Winner",
+        "outcomes": '["Yes", "No"]',
+    }
+
+    assert classify_market_type(row) == "championship_winner"
+    assert extract_outcome_label(row) == "Alexander Zverev"
+
+
+def test_esports_tournament_winner_extracts_outcome() -> None:
+    msi = {
+        "title": "Will Hanwha Life Esports win MSI 2026?",
+        "event_title": "",
+        "outcomes": '["Yes", "No"]',
+    }
+    challengers = {
+        "title": "Will M80 Win North America ACE Stage 3",
+        "event_title": "Challengers 2026: North America ACE Stage 3 Winner",
+        "outcomes": '["Yes", "No"]',
+    }
+
+    assert classify_market_type(msi) == "championship_winner"
+    assert extract_outcome_label(msi) == "Hanwha Life Esports"
+    assert classify_market_type(challengers) == "championship_winner"
+    assert extract_outcome_label(challengers) == "M80"
+
+
+def test_division_winner_extracts_team_outcome() -> None:
+    row = {
+        "title": "Will Cleveland Browns win the 2026 AFC North?",
+        "event_title": "Pro Football: AFC North Champion",
+        "outcomes": '["Yes", "No"]',
+    }
+
+    assert classify_market_type(row) == "championship_winner"
+    assert extract_outcome_label(row) == "Cleveland Browns"
+
+
+def test_semantic_vectors_do_not_attach_when_text_hash_changes() -> None:
+    identity = "polymarket|market-1|slug-1|yes-1|team-a"
+    lookup = _semantic_embedding_lookup(
+        pd.DataFrame(
+            [
+                {
+                    "embedding_key": f"{identity}|oldhash",
+                    "embedding_vector": "[1.0, 0.0]",
+                    "semantic_provider": "vertex-gemini",
+                    "embedding_model": "gemini-embedding-2",
+                    "embedding_dim": "3072",
+                    "embedding_text_hash": "oldhash",
+                }
+            ]
+        )
+    )
+    frame = pd.DataFrame([{"_semantic_embedding_key": f"{identity}|newhash"}])
+
+    _attach_semantic_vectors(frame, lookup)
+
+    assert frame.loc[0, "_semantic_vector"] == []
+    assert frame.loc[0, "_semantic_provider"] == ""
+
+
+def test_tennis_parserless_event_key_groups_market_types_by_match() -> None:
+    total = {
+        "venue": "polymarket",
+        "category": "tennis",
+        "market_type": "total",
+        "title": "Blockx vs. Zverev: Match O/U 36.5",
+        "event_title": "Blockx vs. Zverev",
+        "event_date": "2026-06-30",
+        "ticker_or_slug": "atp-blockx-zverev-2026-06-29-match-total-36pt5",
+    }
+    winner = {
+        **total,
+        "market_type": "match_winner",
+        "title": "Wimbledon ATP: Alexander Blockx vs Alexander Zverev",
+        "event_title": "Alexander Blockx vs Alexander Zverev",
+        "outcome_label": "Alexander Zverev",
+    }
+
+    assert _parserless_event_key(total) == _parserless_event_key(winner)
+
+
+def test_event_score_penalizes_incompatible_event_market_type() -> None:
+    pm_stage = {
+        "event_title": "World Cup: Netherlands Stage of Elimination",
+        "event_text": "World Cup Netherlands Stage of Elimination Netherlands wins tournament champion",
+        "event_year": "2026",
+        "market_type_set": {"championship_winner"},
+        "sport_context_set": {"soccer"},
+        "scope_key_set": {"soccer_world_cup"},
+    }
+    kalshi_winner = {
+        "event_title": "2026 FIFA World Cup Winner",
+        "event_text": "2026 FIFA World Cup Winner Netherlands champion",
+        "event_year": "2026",
+        "market_type_set": {"championship_winner"},
+        "sport_context_set": {"soccer"},
+        "scope_key_set": {"soccer_world_cup"},
+    }
+    kalshi_match = {
+        "event_title": "Netherlands vs Morocco",
+        "event_text": "Netherlands vs Morocco match winner Netherlands Morocco",
+        "event_year": "2026",
+        "market_type_set": {"match_winner"},
+        "sport_context_set": {"soccer"},
+        "scope_key_set": set(),
+    }
+
+    winner_score, _ = _parserless_event_pair_score(pm_stage, kalshi_winner, semantic_enabled=False)
+    match_score, parts = _parserless_event_pair_score(pm_stage, kalshi_match, semantic_enabled=False)
+
+    assert parts["compatibility_cap"] == 68.0
+    assert match_score < 72.0
+    assert winner_score > match_score
+
+
+def test_f1_q3_qualifying_scope_matches_regular_pole_but_not_sprint() -> None:
+    regular_pole = {
+        "category": "f1",
+        "market_type": "pole_position_winner",
+        "event_title": "British Grand Prix: Driver Pole Position",
+        "title": "Will Lando Norris get pole position at the 2026 F1 British Grand Prix?",
+    }
+    kalshi_q3 = {
+        "category": "f1",
+        "market_type": "pole_position_winner",
+        "event_title": "British Grand Prix Qualifying Session (Q3): Pole Position",
+        "title": "Will Lando Norris set the fastest valid qualifying lap time in the Qualifying session (Q3) for the 2026 British Grand Prix?",
+    }
+    sprint_pole = {
+        "category": "f1",
+        "market_type": "pole_position_winner",
+        "event_title": "British Grand Prix: Sprint Qualifying Pole Winner",
+        "title": "Will Lando Norris achieve pole position in Sprint Qualifying at the 2026 F1 British Grand Prix?",
+    }
+
+    assert _event_scope_key(regular_pole) == "f1_british-grand-prix_pole"
+    assert _event_scope_key(kalshi_q3) == "f1_british-grand-prix_pole"
+    assert _event_scope_key(sprint_pole) == "f1_british-grand-prix_sprint_qualifying_pole"
+
+
+def test_parserless_gate_rejects_missing_side_and_wrong_local_mlb_date() -> None:
+    base = {
+        "run_id": "gate-test",
+        "market_type": "match_winner",
+        "category": "mlb",
+        "event_year": "2026",
+    }
+    missing_side = {
+        **base,
+        "venue": "polymarket",
+        "category": "tennis",
+        "title": "Wimbledon ATP: Completed Match: Felix Auger-Aliassime vs Alexander Shevchenko",
+        "event_title": "Felix Auger-Aliassime vs Alexander Shevchenko",
+        "event_date": "2026-06-29",
+        "ticker_or_slug": "atp-augeral-shevche-2026-06-29-completed-match",
+    }
+    tennis_side = {
+        **base,
+        "venue": "kalshi",
+        "category": "tennis",
+        "title": "Will Alexander Zverev win the Blockx vs Zverev: Round Of 128 match?",
+        "event_title": "Blockx vs Zverev",
+        "event_date": "2026-06-29",
+        "outcome_label": "Alexander Zverev",
+        "ticker_or_slug": "KXATPMATCH-26JUN29BLOZVE-ZVE",
+    }
+    pm_mlb = {
+        **base,
+        "venue": "polymarket",
+        "title": "Detroit Tigers vs. New York Yankees",
+        "event_title": "Detroit Tigers vs. New York Yankees",
+        "event_date": "2026-06-30",
+        "outcome_label": "Detroit Tigers",
+        "ticker_or_slug": "mlb-det-nyy-2026-06-30",
+    }
+    ks_mlb = {
+        **base,
+        "venue": "kalshi",
+        "title": "Detroit vs New York Y Winner?",
+        "event_title": "Detroit vs New York Y",
+        "event_date": "2026-06-30",
+        "outcome_label": "Detroit",
+        "ticker_or_slug": "KXMLBGAME-26JUN291905DETNYY-DET",
+    }
+
+    assert _obvious_parserless_pair_rejection_reason(missing_side, tennis_side, semantic_enabled=True) == "excluded_missing_outcome"
+    assert _obvious_parserless_pair_rejection_reason(pm_mlb, ks_mlb, semantic_enabled=True) == "excluded_wrong_date"
 
 
 def test_manual_mapping_validation_requires_approval_and_settlement_notes() -> None:

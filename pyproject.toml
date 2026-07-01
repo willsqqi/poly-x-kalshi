@@ -14,6 +14,7 @@ dependencies = [
   "duckdb>=1.0",
   "httpx>=0.27",
   "ipykernel>=6.29",
+  "numpy>=1.26",
   "pandas>=2.1",
   "playwright>=1.45",
   "polars>=1.0",
@@ -28,6 +29,12 @@ dev = [
 ]
 gcp = [
   "google-cloud-storage>=2.16",
+  "google-cloud-aiplatform>=1.60",
+  "google-genai>=1.20",
+  "psycopg[binary]>=3.2",
+]
+dashboard = [
+  "streamlit>=1.36",
 ]
 
 [tool.setuptools.packages.find]
@@ -41,6 +48,13 @@ poly-x-kalshi-fifa-snapshot = "prediction_market.fifa_arbitrage:snapshot_cli_mai
 poly-x-kalshi-fifa-watch = "prediction_market.fifa_arbitrage:watch_cli_main"
 poly-x-kalshi-sports-snapshot = "prediction_market.fifa_arbitrage:sports_snapshot_cli_main"
 poly-x-kalshi-sports-watch = "prediction_market.fifa_arbitrage:sports_watch_cli_main"
+poly-x-kalshi-dashboard = "prediction_market.dashboard:main"
+poly-x-kalshi-viability-report = "prediction_market.viability_report:main"
+poly-x-kalshi-all-open-event-match = "prediction_market.all_open_event_match:main"
+poly-x-kalshi-all-active-market-snapshot = "prediction_market.all_active_market_snapshot:main"
+poly-x-kalshi-market-pair-semantic-review = "prediction_market.market_pair_semantic_review:main"
+poly-x-kalshi-cloud-db = "prediction_market.cloud_db:main"
+poly-x-kalshi-cloud-daily-pipeline = "prediction_market.cloud_daily_pipeline:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

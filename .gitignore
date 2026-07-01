@@ -37,6 +37,7 @@ data/cross_sports_arbitrage/raw/*
 data/cross_sports_arbitrage/processed/*
 data/cross_sports_arbitrage/alerts/*
 logs/*
+reports/*
 
 !data/raw/.gitkeep
 !data/processed/.gitkeep
@@ -87,7 +88,9 @@ data/cross_sports_arbitrage/raw/kalshi/*
 !data/cross_sports_arbitrage/processed/
 data/cross_sports_arbitrage/processed/*
 !data/cross_sports_arbitrage/processed/.gitkeep
+data/cross_sports_arbitrage/manual_review/**/history/*
 !data/cross_sports_arbitrage/alerts/
 data/cross_sports_arbitrage/alerts/*
 !data/cross_sports_arbitrage/alerts/.gitkeep
 !logs/.gitkeep
+!reports/.gitkeep

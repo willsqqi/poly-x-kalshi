@@ -7,6 +7,8 @@ GCP_DIR="$ROOT_DIR/infra/gcp"
 PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project 2>/dev/null || true)}"
 REGION="${REGION:-us-central1}"
 RUN_MANUAL_SNAPSHOT="${RUN_MANUAL_SNAPSHOT:-0}"
+RUN_MANUAL_SPORTS_SNAPSHOT="${RUN_MANUAL_SPORTS_SNAPSHOT:-0}"
+IMAGE_TAG="${IMAGE_TAG:-$(date -u +%Y%m%d%H%M%S)-$(git rev-parse --short HEAD 2>/dev/null || echo local)}"
 
 if [[ -z "$PROJECT_ID" ]]; then
   echo "PROJECT_ID is required. Set it or run: gcloud config set project <project-id>" >&2
@@ -41,13 +43,29 @@ terraform -chdir="$GCP_DIR" apply -auto-approve \
   -target=google_project_service.required \
   -target=google_artifact_registry_repository.scanner
 
-IMAGE="$(terraform -chdir="$GCP_DIR" output -raw artifact_registry_repository)/fifa-scanner:latest"
+IMAGE="$(terraform -chdir="$GCP_DIR" output -raw artifact_registry_repository)/fifa-scanner:$IMAGE_TAG"
 echo "Building scanner image with Cloud Build: $IMAGE"
 gcloud builds submit \
   --project "$PROJECT_ID" \
   --config "$ROOT_DIR/cloudbuild.gcp-scanner.yaml" \
   --substitutions "_IMAGE=$IMAGE" \
   "$ROOT_DIR"
+
+python - "$GCP_DIR/terraform.tfvars" "$IMAGE" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1])
+image = sys.argv[2]
+text = path.read_text(encoding="utf-8")
+replacement = f'scanner_image = "{image}"'
+if re.search(r'(?m)^scanner_image\s*=', text):
+    text = re.sub(r'(?m)^scanner_image\s*=\s*"[^"]*"', replacement, text)
+else:
+    text = text.rstrip() + "\n\n" + replacement + "\n"
+path.write_text(text, encoding="utf-8")
+PY
 
 terraform -chdir="$GCP_DIR" apply -auto-approve
 
@@ -61,5 +79,14 @@ if [[ "$RUN_MANUAL_SNAPSHOT" == "1" ]]; then
   echo "Running one manual snapshot job: $JOB_NAME"
   gcloud run jobs execute "$JOB_NAME" --project "$PROJECT_ID" --region "$REGION" --wait
   echo "Latest GCS artifacts:"
+  gsutil ls -r "$OUTPUT_URI/processed/latest/**" || true
+fi
+
+if [[ "$RUN_MANUAL_SPORTS_SNAPSHOT" == "1" ]]; then
+  JOB_NAME="$(terraform -chdir="$GCP_DIR" output -raw sports_cloud_run_job_name)"
+  OUTPUT_URI="$(terraform -chdir="$GCP_DIR" output -raw sports_gcs_output_uri)"
+  echo "Running one manual cross-sports snapshot job: $JOB_NAME"
+  gcloud run jobs execute "$JOB_NAME" --project "$PROJECT_ID" --region "$REGION" --wait
+  echo "Latest cross-sports GCS artifacts:"
   gsutil ls -r "$OUTPUT_URI/processed/latest/**" || true
 fi

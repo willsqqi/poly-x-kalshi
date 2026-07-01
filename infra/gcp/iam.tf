@@ -18,6 +18,24 @@ resource "google_storage_bucket_iam_member" "scanner_object_admin" {
   member = "serviceAccount:${google_service_account.scanner.email}"
 }
 
+resource "google_project_iam_member" "scanner_vertex_ai_user" {
+  project = var.project_id
+  role    = "roles/aiplatform.user"
+  member  = "serviceAccount:${google_service_account.scanner.email}"
+}
+
+resource "google_project_iam_member" "scanner_cloud_sql_client" {
+  project = var.project_id
+  role    = "roles/cloudsql.client"
+  member  = "serviceAccount:${google_service_account.scanner.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "scanner_db_password_accessor" {
+  secret_id = google_secret_manager_secret.prediction_market_db_password.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.scanner.email}"
+}
+
 resource "google_project_iam_member" "scheduler_run_developer" {
   project = var.project_id
   role    = "roles/run.developer"
