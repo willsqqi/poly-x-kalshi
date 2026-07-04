@@ -27,6 +27,7 @@ daily_pipeline_sports_only                 = true
 
 cloud_sql_database_version    = "POSTGRES_15"
 cloud_sql_tier                = "db-custom-2-7680"
+cloud_sql_activation_policy   = "NEVER"
 cloud_sql_disk_size_gb        = 10
 cloud_sql_backup_enabled      = true
 cloud_sql_deletion_protection = true

@@ -13,6 +13,7 @@ resource "google_sql_database_instance" "prediction_market" {
 
   settings {
     tier              = var.cloud_sql_tier
+    activation_policy = var.cloud_sql_activation_policy
     availability_type = "ZONAL"
     disk_type         = "PD_SSD"
     disk_size         = var.cloud_sql_disk_size_gb
