@@ -39,6 +39,10 @@ data/cross_sports_arbitrage/alerts/*
 logs/*
 reports/*
 
+# Local-only portal demo and page-capture helper. Do not push to GitHub.
+site/
+scripts/*marketedge_arbitrage.py
+
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !data/onchain_sample/.gitkeep
